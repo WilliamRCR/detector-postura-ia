@@ -3,6 +3,10 @@ import mediapipe as mp
 import numpy as np
 import joblib
 
+from posture_metrics import CONTEXT_LABELS, SessionStats, detect_context, evaluate_posture
+from smoothing import MajorityVoteSmoother
+from voice_feedback import VoiceFeedback, PostureVoiceCoach
+
 mp_drawing = mp.solutions.drawing_utils
 mp_pose = mp.solutions.pose
 
@@ -28,38 +32,12 @@ def get_keypoints(landmarks):
 
     return np.array(keypoints)
 
-def get_feedback(landmarks):
-    """
-    Feedback simple y estable.
-    """
-
-    nose = landmarks[0]
-
-    left_shoulder = landmarks[11]
-    right_shoulder = landmarks[12]
-
-    left_ear = landmarks[7]
-    right_ear = landmarks[8]
-
-    # Promedios
-    shoulder_y = (left_shoulder.y + right_shoulder.y) / 2
-    ear_y = (left_ear.y + right_ear.y) / 2
-
-    shoulder_level = abs(left_shoulder.y - right_shoulder.y)
-
-    # Hombros desnivelados
-    if shoulder_level > 0.05:
-        return "Endereza los hombros"
-
-    # Cabeza muy adelante
-    if nose.z < left_shoulder.z - 0.15:
-        return "Retrasa un poco la cabeza"
-
-    # Cuello inclinado
-    if abs(ear_y - shoulder_y) < 0.08:
-        return "Levanta un poco la cabeza"
-
-    return "Buena postura"
+status_smoother = MajorityVoteSmoother(window=7)
+feedback_smoother = MajorityVoteSmoother(window=5)
+voice = VoiceFeedback()
+coach = PostureVoiceCoach(voice)
+session = SessionStats()
+session.start()
 
 print("=== DETECTOR DE POSTURA IA ===")
 print("Presiona 'q' para salir")
@@ -82,6 +60,7 @@ while cap.isOpened():
     status = "Sin detectar"
     feedback = ""
     color = (100, 100, 100)
+    context_text = ""
 
     if results.pose_landmarks:
 
@@ -93,15 +72,19 @@ while cap.isOpened():
 
         pred = model.predict(kp_scaled)[0]
 
-        if pred == 1:
+        is_correct = status_smoother.update(pred) == 1
+        feedback = feedback_smoother.update(evaluate_posture(landmarks))
+        context_text = CONTEXT_LABELS[detect_context(landmarks)]
+        session.record(is_correct)
+
+        if is_correct:
             status = "CORRECTA"
             color = (0, 255, 0)
         else:
             status = "INCORRECTA"
             color = (0, 0, 255)
 
-        # Feedback
-        feedback = get_feedback(landmarks)
+        coach.update(is_correct, feedback)
 
         # Dibujar esqueleto
         mp_drawing.draw_landmarks(
@@ -109,6 +92,9 @@ while cap.isOpened():
             results.pose_landmarks,
             mp_pose.POSE_CONNECTIONS
         )
+    else:
+        status_smoother.reset()
+        feedback_smoother.reset()
 
     h, w, _ = frame.shape
 
@@ -134,6 +120,10 @@ while cap.isOpened():
         2
     )
 
+    info_line = "  |  ".join(filter(None, [context_text, session.summary_text()]))
+    if info_line:
+        cv2.putText(frame, info_line, (20, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+
     cv2.imshow("Detector de Postura IA", frame)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -141,3 +131,4 @@ while cap.isOpened():
 
 cap.release()
 cv2.destroyAllWindows()
+voice.stop()

@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Detector de Postura IA</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #0f0f1a;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    header {
+      width: 100%;
+      background: linear-gradient(135deg, #1a1a3e, #0f3460);
+      padding: 20px 0;
+      text-align: center;
+      box-shadow: 0 2px 20px rgba(0,0,0,0.5);
+    }
+
+    header h1 {
+      font-size: 1.9rem;
+      letter-spacing: 2px;
+      color: #ffffff;
+    }
+
+    header p {
+      font-size: 0.85rem;
+      color: #9999cc;
+      margin-top: 4px;
+    }
+
+    .container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 20px;
+      padding: 30px 20px;
+      width: 100%;
+      max-width: 720px;
+    }
+
+    /* Video */
+    .video-wrapper {
+      width: 100%;
+      background: #000;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+      position: relative;
+    }
+
+    #videoStream {
+      width: 100%;
+      display: block;
+    }
+
+    #placeholder {
+      width: 100%;
+      height: 400px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: #444466;
+      font-size: 1rem;
+      gap: 12px;
+    }
+
+    #placeholder svg {
+      opacity: 0.3;
+    }
+
+    /* Estado */
+    #statusBadge {
+      width: 100%;
+      border-radius: 10px;
+      padding: 16px 24px;
+      text-align: center;
+      font-size: 1.4rem;
+      font-weight: 700;
+      letter-spacing: 1px;
+      background: #333355;
+      transition: background 0.4s ease;
+    }
+
+    #statusBadge.green { background: #1a7a45; }
+    #statusBadge.red   { background: #7a1a1a; }
+    #statusBadge.blue  { background: #1a4a7a; }
+
+    /* Feedback */
+    #feedbackBox {
+      width: 100%;
+      background: #1a1a2e;
+      border: 1px solid #2a2a4e;
+      border-radius: 10px;
+      padding: 14px 20px;
+      font-size: 1rem;
+      color: #aaaadd;
+      min-height: 50px;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+
+    #feedbackBox span { font-size: 1.3rem; }
+
+    #feedbackText {
+      white-space: pre-line;
+      line-height: 1.6;
+      padding-top: 2px;
+    }
+
+    /* Contexto + estadisticas de sesion */
+    #infoLine {
+      width: 100%;
+      text-align: center;
+      font-size: 0.85rem;
+      color: #6666aa;
+      min-height: 1em;
+    }
+
+    /* Botones */
+    .buttons {
+      display: flex;
+      gap: 16px;
+    }
+
+    button {
+      padding: 13px 36px;
+      font-size: 1rem;
+      font-weight: 700;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      letter-spacing: 1px;
+      transition: opacity 0.2s, transform 0.1s;
+    }
+
+    button:hover:not(:disabled) { opacity: 0.85; transform: translateY(-1px); }
+    button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    #btnStart { background: #2ecc71; color: #0a2e1a; }
+    #btnStop  { background: #e74c3c; color: #fff; }
+    #btnVoice { background: #333355; color: #fff; }
+    #btnVoice.off { background: #222238; color: #66668a; }
+
+    /* Alerta modelo */
+    .alert {
+      width: 100%;
+      background: #3a1a1a;
+      border: 1px solid #e74c3c;
+      border-radius: 8px;
+      padding: 12px 18px;
+      font-size: 0.9rem;
+      color: #ff9999;
+    }
+
+    footer {
+      margin-top: auto;
+      padding: 16px;
+      font-size: 0.78rem;
+      color: #44446a;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>DETECTOR DE POSTURA &nbsp; IA</h1>
+  <p>MediaPipe &nbsp;+&nbsp; scikit-learn &nbsp;|&nbsp; Tiempo real</p>
+</header>
+
+<div class="container">
+
+  {% if not model_ok %}
+  <div class="alert">
+    Modelo no encontrado. Ejecuta <strong>train.py</strong> primero.
+  </div>
+  {% endif %}
+
+  {% if not voice_available %}
+  <div class="alert">
+    Voz no disponible en este equipo (falta motor TTS). El detector funciona igual, sin audio.
+  </div>
+  {% endif %}
+
+  <!-- Video -->
+  <div class="video-wrapper">
+    <div id="placeholder">
+      <svg width="64" height="64" viewBox="0 0 24 24" fill="#aaaadd">
+        <path d="M17 10.5V7a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3.5l4 4v-11l-4 4z"/>
+      </svg>
+      <span id="placeholderText">Conectando con la cámara...</span>
+    </div>
+    <img id="videoStream" src="" alt="camara" style="display:none;" />
+  </div>
+
+  <!-- Estado -->
+  <div id="statusBadge">Estado: Sin detectar</div>
+
+  <!-- Feedback -->
+  <div id="feedbackBox">
+    <span></span>
+    <span id="feedbackText">Esperando deteccion...</span>
+  </div>
+
+  <!-- Contexto + estadisticas de sesion -->
+  <div id="infoLine"></div>
+
+  <!-- Botones -->
+  <div class="buttons">
+    <button id="btnStart" onclick="startTest()" {% if not model_ok %}disabled{% endif %}>
+      &nbsp; INICIAR
+    </button>
+    <button id="btnStop" onclick="stopTest()" disabled>
+      &nbsp; DETENER
+    </button>
+    <button id="btnVoice" onclick="toggleVoice()" {% if not voice_available %}disabled{% endif %}>
+      &nbsp; VOZ: {{ "ON" if voice_available else "N/D" }}
+    </button>
+  </div>
+
+</div>
+
+<footer>Detector de Postura IA &mdash; localhost:5000</footer>
+
+<script>
+  let streamStarted = false;
+
+  async function startTest() {
+    const res = await fetch('/api/start', { method: 'POST' });
+    const data = await res.json();
+    if (!data.ok) alert(data.error);
+  }
+
+  async function stopTest() {
+    await fetch('/api/stop', { method: 'POST' });
+  }
+
+  function applyVoiceButton(voiceOn) {
+    const voiceBtn = document.getElementById('btnVoice');
+    if (voiceBtn.disabled) return;
+    voiceBtn.textContent = voiceOn ? 'VOZ: ON' : 'VOZ: OFF';
+    voiceBtn.classList.toggle('off', !voiceOn);
+  }
+
+  async function toggleVoice() {
+    const res = await fetch('/api/voice', { method: 'POST' });
+    const data = await res.json();
+    applyVoiceButton(data.voice_on);
+  }
+
+  async function updateStatus() {
+    try {
+      const res = await fetch('/api/status');
+      const data = await res.json();
+
+      const badge = document.getElementById('statusBadge');
+      badge.textContent = 'Estado:  ' + data.status;
+      badge.className = ['green', 'red', 'blue'].includes(data.color) ? data.color : '';
+
+      document.getElementById('feedbackText').textContent =
+        data.feedback || 'Analizando postura...';
+
+      document.getElementById('infoLine').textContent =
+        [data.context, data.session_info].filter(Boolean).join(' | ');
+
+      const videoEl = document.getElementById('videoStream');
+      const placeholder = document.getElementById('placeholder');
+      if (data.running) {
+        if (!streamStarted) {
+          videoEl.src = '/video_feed';
+          streamStarted = true;
+        }
+        videoEl.style.display = 'block';
+        placeholder.style.display = 'none';
+      } else {
+        videoEl.style.display = 'none';
+        placeholder.style.display = 'flex';
+        document.getElementById('placeholderText').textContent =
+          data.camera_error || 'Conectando con la cámara...';
+      }
+
+      document.getElementById('btnStart').disabled = !data.running || data.testing_started;
+      document.getElementById('btnStop').disabled = !data.testing_started;
+
+      applyVoiceButton(data.voice_on);
+    } catch (_) {}
+  }
+
+  updateStatus();
+  setInterval(updateStatus, 500);
+</script>
+
+</body>
+</html>

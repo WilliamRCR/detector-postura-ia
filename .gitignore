@@ -2,3 +2,5 @@
 *.npz
 __pycache__/
 .env
+venv
+.claude
