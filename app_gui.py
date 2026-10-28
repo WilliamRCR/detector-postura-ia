@@ -33,7 +33,18 @@ RED = "#e74c3c"
 GRAY = "#555577"
 TEXT_COLOR = "#e0e0e0"
 
-VIDEO_W, VIDEO_H = 640, 480
+VIDEO_MAX_W, VIDEO_MAX_H = 640, 480
+VIDEO_MIN_H = 240
+
+# Alto aproximado de todo lo que NO es el video (encabezado, pestanas, estado,
+# feedback, botones y pie). Se reserva para que los botones siempre entren en
+# pantalla: en monitores de 768 px de alto, un video fijo de 480 px dejaba
+# INICIAR fuera de la ventana.
+CHROME_HEIGHT = 370
+
+# Barra de titulo + barra de tareas de Windows: espacio que la ventana nunca
+# puede ocupar aunque la pantalla lo reporte como disponible.
+SCREEN_MARGIN = 90
 
 
 class PostureApp:
@@ -41,7 +52,10 @@ class PostureApp:
         self.root = root
         self.root.title("Detector de Postura IA")
         self.root.configure(bg=BG_COLOR)
-        self.root.resizable(False, False)
+        # Redimensionable a proposito: si la pantalla es justa, el usuario
+        # siempre puede estirar la ventana para ver los botones.
+        self.root.resizable(True, True)
+        self.video_w, self.video_h = self._video_size()
 
         self.cfg = AppConfig.load()
 
@@ -91,11 +105,67 @@ class PostureApp:
         self.session = SessionStats()
 
         self._build_ui()
+        self._fit_to_screen()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._start_preview()
         self._setup_tray()
 
     # ------------------------------------------------------------------ UI
+    def _video_size(self):
+        """Tamano inicial del video, antes de medir la interfaz real."""
+        try:
+            disponible = self.root.winfo_screenheight() - CHROME_HEIGHT
+        except tk.TclError:
+            disponible = VIDEO_MAX_H
+        alto = max(VIDEO_MIN_H, min(VIDEO_MAX_H, disponible))
+        return int(alto * 4 / 3), int(alto)
+
+    def _show_placeholder(self):
+        """Pone una imagen negra del tamano exacto del video.
+
+        Importante: un tk.Label SIN imagen mide width/height en caracteres y
+        lineas, no en pixeles. Con height=480 pedia 480 lineas de texto y la
+        ventana calculaba un alto absurdo (7000+ px) antes del primer frame.
+        """
+        img = ImageTk.PhotoImage(Image.new("RGB", (self.video_w, self.video_h), "black"))
+        self.video_label.imgtk = img
+        self.video_label.config(image=img)
+
+    def _set_video_height(self, alto):
+        self.video_w, self.video_h = int(alto * 4 / 3), int(alto)
+        self._show_placeholder()
+        self.root.update_idletasks()
+
+    def _fit_to_screen(self):
+        """Busca el video mas grande con el que la ventana entre en pantalla.
+
+        Se mide la interfaz ya construida en vez de estimarla: el alto del
+        encabezado, las pestanas y los botones cambia con la fuente y el tema
+        de Windows, y una estimacion fija dejaba INICIAR fuera de cuadro.
+
+        Arranca del tamano maximo y achica solo lo que sobra, repitiendo
+        porque cada cambio de tamano reacomoda el resto de la ventana.
+        """
+        try:
+            pantalla = self.root.winfo_screenheight()
+        except tk.TclError:
+            return
+        usable = pantalla - SCREEN_MARGIN
+
+        self._set_video_height(VIDEO_MAX_H)
+        for _ in range(5):
+            sobra = self.root.winfo_reqheight() - usable
+            if sobra <= 0:
+                break
+            nuevo = max(VIDEO_MIN_H, self.video_h - sobra)
+            if nuevo == self.video_h:
+                break  # ya esta en el minimo: no se puede achicar mas
+            self._set_video_height(nuevo)
+
+        # El usuario puede achicar la ventana, pero no hasta esconder los botones.
+        resto = self.root.winfo_reqheight() - self.video_h
+        self.root.minsize(560, min(usable, resto + VIDEO_MIN_H))
+
     def _build_ui(self):
         header = tk.Frame(self.root, bg=ACCENT_COLOR, pady=14)
         header.pack(fill=tk.X)
@@ -125,10 +195,11 @@ class PostureApp:
     def _build_detector_tab(self):
         parent = self.tab_detector
 
-        video_frame = tk.Frame(parent, bg=BG_COLOR, pady=12)
+        video_frame = tk.Frame(parent, bg=BG_COLOR, pady=8)
         video_frame.pack()
-        self.video_label = tk.Label(video_frame, bg="#000000", width=VIDEO_W, height=VIDEO_H)
+        self.video_label = tk.Label(video_frame, bg="#000000", bd=0)
         self.video_label.pack()
+        self._show_placeholder()
 
         self.status_var = tk.StringVar(value="Estado: Sin detectar")
         self.status_label = tk.Label(
@@ -165,7 +236,7 @@ class PostureApp:
             pady=2,
         ).pack()
 
-        btn_frame = tk.Frame(parent, bg=BG_COLOR, pady=14)
+        btn_frame = tk.Frame(parent, bg=BG_COLOR, pady=10)
         btn_frame.pack()
 
         self.start_btn = tk.Button(
@@ -243,11 +314,11 @@ class PostureApp:
 
         tk.Label(
             parent,
-            text="MediaPipe + scikit-learn  |  DETENER vuelve a la vista previa, cerrar minimiza a la bandeja",
+            text="DETENER vuelve a la vista previa  ·  cerrar minimiza a la bandeja",
             font=("Segoe UI", 9),
             fg="#666688",
             bg=BG_COLOR,
-            pady=8,
+            pady=6,
         ).pack()
 
     # ---------------------------------------------------------- historial
@@ -356,9 +427,38 @@ class PostureApp:
             self.history_summary.set(texto)
 
     # ------------------------------------------------------------ ajustes
+    def _scrollable(self, parent):
+        """Devuelve un frame interno con barra de scroll vertical.
+
+        El Notebook adopta el alto de su pestana mas alta. Sin scroll, los ~18
+        controles de Ajustes estiraban TODA la ventana y dejaban los botones
+        del Detector fuera de la pantalla.
+        """
+        canvas = tk.Canvas(parent, bg=BG_COLOR, highlightthickness=0)
+        bar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        inner = tk.Frame(canvas, bg=BG_COLOR)
+
+        inner.bind(
+            "<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        ventana = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(ventana, width=e.width))
+        canvas.configure(yscrollcommand=bar.set)
+
+        bar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        def rueda(event):
+            canvas.yview_scroll(-event.delta // 120, "units")
+
+        # Solo se escucha la rueda mientras el puntero esta sobre esta pestana.
+        canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", rueda))
+        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+        return inner
+
     def _build_settings_tab(self):
-        parent = self.tab_settings
-        wrap = tk.Frame(parent, bg=BG_COLOR, padx=28, pady=16)
+        contenedor = self._scrollable(self.tab_settings)
+        wrap = tk.Frame(contenedor, bg=BG_COLOR, padx=28, pady=16)
         wrap.pack(fill=tk.BOTH, expand=True)
 
         self.setting_vars = {}
@@ -734,7 +834,7 @@ class PostureApp:
                 self.mp_drawing.DrawingSpec(color=line_color[::-1], thickness=2),
             )
         elif self.privacy_var.get():
-            cv2.putText(frame, "Sin deteccion", (20, VIDEO_H // 2),
+            cv2.putText(frame, "Sin deteccion", (20, frame.shape[0] // 2),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.9, (120, 120, 160), 2)
 
         self.status_var.set(status_text)
@@ -747,7 +847,7 @@ class PostureApp:
         self.info_var.set("   ·   ".join(filter(None, pie)))
 
         img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        img = img.resize((VIDEO_W, VIDEO_H), Image.LANCZOS)
+        img = img.resize((self.video_w, self.video_h), Image.LANCZOS)
         imgtk = ImageTk.PhotoImage(image=img)
         self.video_label.imgtk = imgtk
         self.video_label.config(image=imgtk)
