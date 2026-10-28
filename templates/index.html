@@ -42,10 +42,34 @@
       flex-direction: column;
       align-items: center;
       gap: 20px;
-      padding: 30px 20px;
+      padding: 24px 20px;
       width: 100%;
-      max-width: 720px;
+      max-width: 760px;
     }
+
+    /* Pestanas */
+    .tabs {
+      display: flex;
+      gap: 8px;
+      width: 100%;
+      border-bottom: 1px solid #2a2a4e;
+    }
+
+    .tab {
+      padding: 10px 22px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: #7777aa;
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      letter-spacing: 0.5px;
+    }
+
+    .tab.active { color: #ffffff; border-bottom-color: #2ecc71; }
+    .panel { display: none; width: 100%; flex-direction: column; align-items: center; gap: 18px; }
+    .panel.active { display: flex; }
 
     /* Video */
     .video-wrapper {
@@ -57,10 +81,7 @@
       position: relative;
     }
 
-    #videoStream {
-      width: 100%;
-      display: block;
-    }
+    #videoStream { width: 100%; display: block; }
 
     #placeholder {
       width: 100%;
@@ -74,8 +95,20 @@
       gap: 12px;
     }
 
-    #placeholder svg {
-      opacity: 0.3;
+    #placeholder svg { opacity: 0.3; }
+
+    #privacyBadge {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      background: rgba(15, 52, 96, 0.85);
+      color: #aaccff;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 1px;
+      padding: 6px 12px;
+      border-radius: 20px;
+      display: none;
     }
 
     /* Estado */
@@ -118,7 +151,6 @@
       padding-top: 2px;
     }
 
-    /* Contexto + estadisticas de sesion */
     #infoLine {
       width: 100%;
       text-align: center;
@@ -128,13 +160,10 @@
     }
 
     /* Botones */
-    .buttons {
-      display: flex;
-      gap: 16px;
-    }
+    .buttons { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; }
 
     button {
-      padding: 13px 36px;
+      padding: 13px 30px;
       font-size: 1rem;
       font-weight: 700;
       border: none;
@@ -149,8 +178,8 @@
 
     #btnStart { background: #2ecc71; color: #0a2e1a; }
     #btnStop  { background: #e74c3c; color: #fff; }
-    #btnVoice { background: #333355; color: #fff; }
-    #btnVoice.off { background: #222238; color: #66668a; }
+    #btnVoice, #btnPrivacy { background: #333355; color: #fff; }
+    #btnVoice.off, #btnPrivacy.off { background: #222238; color: #66668a; }
 
     /* Alerta modelo */
     .alert {
@@ -162,6 +191,79 @@
       font-size: 0.9rem;
       color: #ff9999;
     }
+
+    /* Historial */
+    .card {
+      width: 100%;
+      background: #16213e;
+      border: 1px solid #2a2a4e;
+      border-radius: 12px;
+      padding: 20px;
+    }
+
+    .card h2 {
+      font-size: 1.05rem;
+      color: #ffffff;
+      margin-bottom: 4px;
+      letter-spacing: 0.5px;
+    }
+
+    .card .sub { font-size: 0.82rem; color: #6666aa; margin-bottom: 16px; }
+
+    #weekChart { width: 100%; height: 240px; display: block; }
+
+    .totals {
+      display: flex;
+      gap: 18px;
+      flex-wrap: wrap;
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid #2a2a4e;
+    }
+
+    .total-item { flex: 1; min-width: 110px; }
+    .total-item .value { font-size: 1.5rem; font-weight: 700; color: #ffffff; }
+    .total-item .label { font-size: 0.78rem; color: #6666aa; margin-top: 2px; }
+
+    #historyNote { font-size: 0.85rem; color: #8888bb; margin-top: 14px; }
+
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.85rem; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #22223f; }
+    th { color: #6666aa; font-weight: 600; font-size: 0.75rem; letter-spacing: 0.5px; }
+    td { color: #aaaadd; }
+
+    /* Ajustes */
+    .setting {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 9px 0;
+      border-bottom: 1px solid #1f1f3a;
+    }
+
+    .setting:last-child { border-bottom: none; }
+    .setting label { font-size: 0.9rem; color: #c8c8e8; }
+    .setting .hint { display: block; font-size: 0.74rem; color: #5a5a85; margin-top: 2px; }
+
+    .setting input[type="number"] {
+      width: 92px;
+      padding: 7px 10px;
+      background: #0f0f1f;
+      border: 1px solid #2a2a4e;
+      border-radius: 6px;
+      color: #e0e0e0;
+      font-size: 0.9rem;
+      font-family: inherit;
+    }
+
+    .setting input[type="checkbox"] { width: 18px; height: 18px; accent-color: #2ecc71; cursor: pointer; }
+
+    .settings-actions { display: flex; gap: 12px; margin-top: 18px; }
+    .settings-actions button { padding: 11px 24px; font-size: 0.92rem; }
+    #btnSave { background: #2ecc71; color: #0a2e1a; }
+    #btnReload { background: #0f3460; color: #fff; }
+    #settingsMsg { font-size: 0.85rem; color: #2ecc71; margin-top: 12px; min-height: 1.2em; }
 
     footer {
       margin-top: auto;
@@ -183,7 +285,7 @@
 
   {% if not model_ok %}
   <div class="alert">
-    Modelo no encontrado. Ejecuta <strong>train.py</strong> primero.
+    {{ model_error or "Modelo no encontrado. Ejecuta train.py primero." }}
   </div>
   {% endif %}
 
@@ -193,40 +295,84 @@
   </div>
   {% endif %}
 
-  <!-- Video -->
-  <div class="video-wrapper">
-    <div id="placeholder">
-      <svg width="64" height="64" viewBox="0 0 24 24" fill="#aaaadd">
-        <path d="M17 10.5V7a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3.5l4 4v-11l-4 4z"/>
-      </svg>
-      <span id="placeholderText">Conectando con la cámara...</span>
+  <div class="tabs">
+    <button class="tab active" data-panel="detector">Detector</button>
+    <button class="tab" data-panel="historial">Historial</button>
+    <button class="tab" data-panel="ajustes">Ajustes</button>
+  </div>
+
+  <!-- ============================= DETECTOR ============================= -->
+  <div class="panel active" id="panel-detector">
+
+    <div class="video-wrapper">
+      <div id="placeholder">
+        <svg width="64" height="64" viewBox="0 0 24 24" fill="#aaaadd">
+          <path d="M17 10.5V7a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3.5l4 4v-11l-4 4z"/>
+        </svg>
+        <span id="placeholderText">Conectando con la cámara...</span>
+      </div>
+      <img id="videoStream" src="" alt="camara" style="display:none;" />
+      <div id="privacyBadge">MODO PRIVACIDAD</div>
     </div>
-    <img id="videoStream" src="" alt="camara" style="display:none;" />
+
+    <div id="statusBadge">Estado: Sin detectar</div>
+
+    <div id="feedbackBox">
+      <span></span>
+      <span id="feedbackText">Esperando deteccion...</span>
+    </div>
+
+    <div id="infoLine"></div>
+
+    <div class="buttons">
+      <button id="btnStart" onclick="startTest()" {% if not model_ok %}disabled{% endif %}>INICIAR</button>
+      <button id="btnStop" onclick="stopTest()" disabled>DETENER</button>
+      <button id="btnVoice" onclick="toggleVoice()" {% if not voice_available %}disabled{% endif %}>
+        VOZ: {{ "ON" if voice_available else "N/D" }}
+      </button>
+      <button id="btnPrivacy" onclick="togglePrivacy()">PRIVACIDAD: OFF</button>
+    </div>
+
   </div>
 
-  <!-- Estado -->
-  <div id="statusBadge">Estado: Sin detectar</div>
+  <!-- ============================= HISTORIAL ============================= -->
+  <div class="panel" id="panel-historial">
+    <div class="card">
+      <h2>Últimos 7 días</h2>
+      <p class="sub">Porcentaje de tiempo en buena postura por día (las barras grises son días sin uso).</p>
+      <svg id="weekChart" viewBox="0 0 700 240" preserveAspectRatio="xMidYMid meet" role="img"
+           aria-label="Porcentaje de buena postura por día de la última semana"></svg>
 
-  <!-- Feedback -->
-  <div id="feedbackBox">
-    <span></span>
-    <span id="feedbackText">Esperando deteccion...</span>
+      <div class="totals" id="weekTotals"></div>
+      <p id="historyNote"></p>
+    </div>
+
+    <div class="card">
+      <h2>Últimas sesiones</h2>
+      <p class="sub">Cada vez que detienes el detector o cierras la app se guarda una sesión.</p>
+      <table>
+        <thead>
+          <tr><th>Fecha</th><th>Minutos</th><th>% correcta</th><th>Problema más común</th></tr>
+        </thead>
+        <tbody id="recentBody">
+          <tr><td colspan="4">Sin sesiones todavía.</td></tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 
-  <!-- Contexto + estadisticas de sesion -->
-  <div id="infoLine"></div>
-
-  <!-- Botones -->
-  <div class="buttons">
-    <button id="btnStart" onclick="startTest()" {% if not model_ok %}disabled{% endif %}>
-      &nbsp; INICIAR
-    </button>
-    <button id="btnStop" onclick="stopTest()" disabled>
-      &nbsp; DETENER
-    </button>
-    <button id="btnVoice" onclick="toggleVoice()" {% if not voice_available %}disabled{% endif %}>
-      &nbsp; VOZ: {{ "ON" if voice_available else "N/D" }}
-    </button>
+  <!-- ============================== AJUSTES ============================== -->
+  <div class="panel" id="panel-ajustes">
+    <div class="card">
+      <h2>Configuración</h2>
+      <p class="sub">Se guarda en <strong>config.json</strong> y se aplica al instante (salvo la cámara).</p>
+      <div id="settingsList"></div>
+      <div class="settings-actions">
+        <button id="btnSave" onclick="saveSettings()">Guardar</button>
+        <button id="btnReload" onclick="loadSettings()">Descartar cambios</button>
+      </div>
+      <p id="settingsMsg"></p>
+    </div>
   </div>
 
 </div>
@@ -236,6 +382,19 @@
 <script>
   let streamStarted = false;
 
+  /* ------------------------------ pestanas ------------------------------ */
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById('panel-' + tab.dataset.panel).classList.add('active');
+      if (tab.dataset.panel === 'historial') loadHistory();
+      if (tab.dataset.panel === 'ajustes') loadSettings();
+    });
+  });
+
+  /* ------------------------------ detector ------------------------------ */
   async function startTest() {
     const res = await fetch('/api/start', { method: 'POST' });
     const data = await res.json();
@@ -244,19 +403,31 @@
 
   async function stopTest() {
     await fetch('/api/stop', { method: 'POST' });
+    loadHistory();
   }
 
   function applyVoiceButton(voiceOn) {
-    const voiceBtn = document.getElementById('btnVoice');
-    if (voiceBtn.disabled) return;
-    voiceBtn.textContent = voiceOn ? 'VOZ: ON' : 'VOZ: OFF';
-    voiceBtn.classList.toggle('off', !voiceOn);
+    const btn = document.getElementById('btnVoice');
+    if (btn.disabled) return;
+    btn.textContent = voiceOn ? 'VOZ: ON' : 'VOZ: OFF';
+    btn.classList.toggle('off', !voiceOn);
+  }
+
+  function applyPrivacyButton(privacy) {
+    const btn = document.getElementById('btnPrivacy');
+    btn.textContent = privacy ? 'PRIVACIDAD: ON' : 'PRIVACIDAD: OFF';
+    btn.classList.toggle('off', !privacy);
+    document.getElementById('privacyBadge').style.display = privacy ? 'block' : 'none';
   }
 
   async function toggleVoice() {
     const res = await fetch('/api/voice', { method: 'POST' });
-    const data = await res.json();
-    applyVoiceButton(data.voice_on);
+    applyVoiceButton((await res.json()).voice_on);
+  }
+
+  async function togglePrivacy() {
+    const res = await fetch('/api/privacy', { method: 'POST' });
+    applyPrivacyButton((await res.json()).privacy);
   }
 
   async function updateStatus() {
@@ -271,8 +442,11 @@
       document.getElementById('feedbackText').textContent =
         data.feedback || 'Analizando postura...';
 
-      document.getElementById('infoLine').textContent =
-        [data.context, data.session_info].filter(Boolean).join(' | ');
+      const info = [data.context, data.session_info];
+      if (data.break_in !== null && data.break_in !== undefined) {
+        info.push('Pausa en ' + data.break_in + ' min');
+      }
+      document.getElementById('infoLine').textContent = info.filter(Boolean).join('  |  ');
 
       const videoEl = document.getElementById('videoStream');
       const placeholder = document.getElementById('placeholder');
@@ -294,7 +468,233 @@
       document.getElementById('btnStop').disabled = !data.testing_started;
 
       applyVoiceButton(data.voice_on);
+      applyPrivacyButton(data.privacy);
     } catch (_) {}
+  }
+
+  /* ------------------------------ historial ----------------------------- */
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+
+  function el(name, attrs, text) {
+    const node = document.createElementNS(SVG_NS, name);
+    for (const [k, v] of Object.entries(attrs || {})) node.setAttribute(k, v);
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function barColor(pct) {
+    if (pct >= 70) return '#2ecc71';
+    if (pct >= 45) return '#f39c12';
+    return '#e74c3c';
+  }
+
+  function drawWeek(week) {
+    const svg = document.getElementById('weekChart');
+    svg.replaceChildren();
+
+    const W = 700, H = 240;
+    const left = 46, right = 16, top = 22, bottom = 48;
+    const plotH = H - top - bottom;
+    const slot = (W - left - right) / week.length;
+    const barW = Math.min(52, slot * 0.5);
+
+    [0, 25, 50, 75, 100].forEach(pct => {
+      const y = H - bottom - (pct / 100) * plotH;
+      svg.appendChild(el('line', {
+        x1: left, y1: y, x2: W - right, y2: y,
+        stroke: pct === 0 ? '#3a3a63' : '#24244a', 'stroke-width': 1
+      }));
+      svg.appendChild(el('text', {
+        x: left - 9, y: y + 4, fill: '#6666aa', 'font-size': 10, 'text-anchor': 'end'
+      }, pct + '%'));
+    });
+
+    week.forEach((day, i) => {
+      const cx = left + slot * (i + 0.5);
+      const y1 = H - bottom;
+
+      if (day.minutos <= 0) {
+        svg.appendChild(el('rect', {
+          x: cx - barW / 2, y: y1 - 3, width: barW, height: 3, fill: '#2a2a4e', rx: 1
+        }));
+      } else {
+        const barH = Math.max(2, (day.porcentaje / 100) * plotH);
+        svg.appendChild(el('rect', {
+          x: cx - barW / 2, y: y1 - barH, width: barW, height: barH,
+          fill: barColor(day.porcentaje), rx: 3
+        }));
+        svg.appendChild(el('text', {
+          x: cx, y: y1 - barH - 7, fill: '#e0e0e0', 'font-size': 11,
+          'font-weight': 700, 'text-anchor': 'middle'
+        }, Math.round(day.porcentaje) + '%'));
+        svg.appendChild(el('text', {
+          x: cx, y: y1 + 34, fill: '#6666aa', 'font-size': 10, 'text-anchor': 'middle'
+        }, Math.round(day.minutos) + ' min'));
+      }
+
+      svg.appendChild(el('text', {
+        x: cx, y: y1 + 18, fill: '#9999cc', 'font-size': 11, 'text-anchor': 'middle'
+      }, day.dia));
+
+      const titulo = el('title', {});
+      titulo.textContent = day.minutos > 0
+        ? `${day.fecha}: ${Math.round(day.porcentaje)}% correcta en ${Math.round(day.minutos)} min (${day.sesiones} sesiones)`
+        : `${day.fecha}: sin uso`;
+      svg.appendChild(titulo);
+    });
+  }
+
+  function drawTotals(totals) {
+    const box = document.getElementById('weekTotals');
+    box.replaceChildren();
+    const items = [
+      [Math.round(totals.porcentaje || 0) + '%', 'Buena postura'],
+      [Math.round(totals.minutos || 0), 'Minutos'],
+      [totals.sesiones || 0, 'Sesiones'],
+    ];
+    for (const [value, label] of items) {
+      const div = document.createElement('div');
+      div.className = 'total-item';
+      const v = document.createElement('div');
+      v.className = 'value';
+      v.textContent = value;
+      const l = document.createElement('div');
+      l.className = 'label';
+      l.textContent = label;
+      div.append(v, l);
+      box.appendChild(div);
+    }
+  }
+
+  async function loadHistory() {
+    try {
+      const res = await fetch('/api/history');
+      const data = await res.json();
+
+      if (!data.enabled) {
+        document.getElementById('historyNote').textContent =
+          'El historial está desactivado en Ajustes.';
+        return;
+      }
+
+      drawWeek(data.week || []);
+      drawTotals(data.totals || {});
+
+      const note = document.getElementById('historyNote');
+      if (!data.totals || !data.totals.sesiones) {
+        note.textContent = 'Todavía no hay sesiones guardadas. Usa el detector y presiona DETENER para registrar una.';
+      } else if (data.totals.problema_comun) {
+        note.textContent = 'Problema más frecuente de la semana: ' + data.totals.problema_comun;
+      } else {
+        note.textContent = 'Sin problemas destacados esta semana.';
+      }
+
+      const body = document.getElementById('recentBody');
+      body.replaceChildren();
+      const recent = data.recent || [];
+      if (!recent.length) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 4;
+        td.textContent = 'Sin sesiones todavía.';
+        tr.appendChild(td);
+        body.appendChild(tr);
+      } else {
+        for (const s of recent) {
+          const tr = document.createElement('tr');
+          [
+            (s.inicio || '').replace('T', '  '),
+            s.minutos.toFixed(1),
+            Math.round(s.porcentaje) + '%',
+            s.problema_comun || '—',
+          ].forEach(text => {
+            const td = document.createElement('td');
+            td.textContent = text;
+            tr.appendChild(td);
+          });
+          body.appendChild(tr);
+        }
+      }
+    } catch (_) {}
+  }
+
+  /* ------------------------------- ajustes ------------------------------ */
+  const SETTINGS_FIELDS = [
+    ['Número de cámara', 'camera_index', 'int', 'Se aplica al reiniciar la app'],
+    ['Espejar imagen', 'flip_camera', 'bool', ''],
+    ['Voz activada', 'voice_enabled', 'bool', ''],
+    ['Velocidad de la voz', 'voice_rate', 'int', '80 a 400'],
+    ['Avisar tras (segundos)', 'alert_after_seconds', 'float', 'Mala postura sostenida'],
+    ['Repetir aviso cada (s)', 'alert_repeat_seconds', 'float', ''],
+    ['Notificaciones del sistema', 'desktop_notifications', 'bool', ''],
+    ['Recordar pausas', 'break_reminders', 'bool', ''],
+    ['Pausa cada (minutos)', 'break_minutes', 'int', '30 a 45 recomendado'],
+    ['Inclinación de hombros máx.', 'shoulder_tilt_max', 'float', 'Proporción del ancho de hombros'],
+    ['Cabeza adelantada máx.', 'forward_head_max', 'float', 'Proporción del ancho de hombros'],
+    ['Altura de cabeza mín.', 'neck_compression_min', 'float', 'Proporción del largo del torso'],
+    ['Duración evaluación (s)', 'assessment_seconds', 'float', ''],
+    ['Modo privacidad', 'privacy_mode', 'bool', 'Oculta el video, deja el esqueleto'],
+    ['Guardar historial', 'save_history', 'bool', ''],
+  ];
+
+  async function loadSettings() {
+    const res = await fetch('/api/config');
+    const { config } = await res.json();
+
+    const list = document.getElementById('settingsList');
+    list.replaceChildren();
+
+    for (const [label, key, kind, hint] of SETTINGS_FIELDS) {
+      const row = document.createElement('div');
+      row.className = 'setting';
+
+      const lab = document.createElement('label');
+      lab.setAttribute('for', 'cfg-' + key);
+      lab.textContent = label;
+      if (hint) {
+        const small = document.createElement('span');
+        small.className = 'hint';
+        small.textContent = hint;
+        lab.appendChild(small);
+      }
+
+      const input = document.createElement('input');
+      input.id = 'cfg-' + key;
+      input.dataset.key = key;
+      input.dataset.kind = kind;
+      if (kind === 'bool') {
+        input.type = 'checkbox';
+        input.checked = Boolean(config[key]);
+      } else {
+        input.type = 'number';
+        input.step = kind === 'int' ? '1' : '0.01';
+        input.value = config[key];
+      }
+
+      row.append(lab, input);
+      list.appendChild(row);
+    }
+
+    document.getElementById('settingsMsg').textContent = '';
+  }
+
+  async function saveSettings() {
+    const payload = {};
+    document.querySelectorAll('#settingsList input').forEach(input => {
+      payload[input.dataset.key] =
+        input.dataset.kind === 'bool' ? input.checked : parseFloat(input.value);
+    });
+
+    const res = await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+
+    const msg = document.getElementById('settingsMsg');
+    msg.textContent = data.aviso ? 'Guardado. ' + data.aviso : 'Guardado en config.json.';
+    setTimeout(() => { msg.textContent = ''; }, 5000);
   }
 
   updateStatus();

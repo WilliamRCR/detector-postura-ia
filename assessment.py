@@ -1,13 +1,21 @@
 """Evaluacion inicial: mide la postura 'habitual' del usuario durante N segundos
-y da un veredicto final, en vez de corregir cada frame."""
+y da un veredicto final, en vez de corregir cada frame.
+
+Esos mismos segundos sirven de calibracion: los umbrales por defecto son
+iguales para todos, pero cada cuerpo y cada camara son distintos, asi que al
+terminar se proponen umbrales ajustados a esa persona.
+"""
 import time
 from collections import Counter
 
+from posture_metrics import DEFAULT_THRESHOLDS, PostureCalibrator
+
 
 class PostureAssessment:
-    def __init__(self, duration=30.0, good_threshold=70.0):
+    def __init__(self, duration=30.0, good_threshold=70.0, calibrate=True):
         self.duration = duration
         self._good_threshold = good_threshold
+        self._calibrate = calibrate
         self._start_time = None
         self._done = False
         self._correct = 0
@@ -15,6 +23,7 @@ class PostureAssessment:
         self._issues = Counter()
         self._contexts = Counter()
         self._aspect_totals = {}
+        self._calibrator = PostureCalibrator()
 
     def start(self):
         self._start_time = time.time()
@@ -24,6 +33,7 @@ class PostureAssessment:
         self._issues = Counter()
         self._contexts = Counter()
         self._aspect_totals = {}
+        self._calibrator = PostureCalibrator()
 
     @property
     def active(self):
@@ -45,7 +55,7 @@ class PostureAssessment:
         """True cuando ya se cumplio el tiempo y toca llamar a finish()."""
         return self.active and self.elapsed >= self.duration
 
-    def record(self, is_correct, feedback_text, context=None, aspects=None):
+    def record(self, is_correct, feedback_text, context=None, aspects=None, metrics=None):
         if not self.active:
             return
         if is_correct:
@@ -60,8 +70,10 @@ class PostureAssessment:
             for key, ok in aspects.items():
                 total, good = self._aspect_totals.get(key, (0, 0))
                 self._aspect_totals[key] = (total + 1, good + (1 if ok else 0))
+        if metrics:
+            self._calibrator.record(metrics)
 
-    def finish(self):
+    def finish(self, base_thresholds=None):
         """Cierra la evaluacion y devuelve el veredicto. Solo debe llamarse una vez."""
         self._done = True
         total = self._correct + self._incorrect
@@ -74,6 +86,8 @@ class PostureAssessment:
                 "dominant_issue": None,
                 "dominant_context": None,
                 "aspect_percents": {},
+                "thresholds": None,
+                "calibration_note": "Sin datos para calibrar.",
                 "verdict": "No pude verte bien durante la evaluacion. Ubicate frente a la camara e intenta de nuevo.",
             }
 
@@ -90,6 +104,17 @@ class PostureAssessment:
             for key, (aspect_total, good_count) in self._aspect_totals.items()
             if aspect_total > 0
         }
+
+        # --- Calibracion personal ---
+        thresholds = None
+        calibration_note = "Calibracion desactivada."
+        if self._calibrate:
+            base = base_thresholds or DEFAULT_THRESHOLDS
+            suggested, calibration_note = self._calibrator.suggest(
+                base=base, percent_correct=percent_correct
+            )
+            # Solo se devuelve si realmente cambio algo respecto a la base.
+            thresholds = suggested if suggested != base else None
 
         if good:
             verdict = (
@@ -109,5 +134,7 @@ class PostureAssessment:
             "dominant_issue": dominant_issue,
             "dominant_context": dominant_context,
             "aspect_percents": aspect_percents,
+            "thresholds": thresholds,
+            "calibration_note": calibration_note,
             "verdict": verdict,
         }

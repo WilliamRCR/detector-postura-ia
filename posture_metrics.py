@@ -2,16 +2,16 @@
 largo de torso) en vez de coordenadas crudas, para que los umbrales no dependan
 de que tan cerca esta la persona de la camara ni de su tipo de cuerpo.
 
-Tambien incluye una deteccion best-effort de si la persona esta sentada o de
-pie, y un contador simple de estadisticas de sesion.
+Tambien incluye calibracion personal de umbrales, una deteccion best-effort de
+si la persona esta sentada o de pie, y un contador de estadisticas de sesion.
+
+La geometria vive en core.py: aqui solo quedan los umbrales y la lectura.
 """
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-
-def _dist(a, b):
-    return math.hypot(a.x - b.x, a.y - b.y)
+import core
 
 
 def _visible(lm, threshold=0.5):
@@ -20,14 +20,7 @@ def _visible(lm, threshold=0.5):
 
 def _joint_angle(a, b, c):
     """Angulo en grados formado en el punto b por los segmentos b-a y b-c."""
-    v1 = (a.x - b.x, a.y - b.y)
-    v2 = (c.x - b.x, c.y - b.y)
-    mag1, mag2 = math.hypot(*v1), math.hypot(*v2)
-    if mag1 < 1e-6 or mag2 < 1e-6:
-        return None
-    cos_angle = (v1[0] * v2[0] + v1[1] * v2[1]) / (mag1 * mag2)
-    cos_angle = max(-1.0, min(1.0, cos_angle))
-    return math.degrees(math.acos(cos_angle))
+    return core._angle_between((a.x - b.x, a.y - b.y), (c.x - b.x, c.y - b.y))
 
 
 @dataclass
@@ -49,26 +42,7 @@ DEFAULT_THRESHOLDS = PostureThresholds()
 def compute_metrics(landmarks):
     """Devuelve las razones normalizadas, o None si no se puede medir con
     confianza (p. ej. la persona esta de lado y el ancho de hombros colapsa)."""
-    nose = landmarks[0]
-    ls, rs = landmarks[11], landmarks[12]
-    le, re = landmarks[7], landmarks[8]
-    lh, rh = landmarks[23], landmarks[24]
-
-    shoulder_width = _dist(ls, rs)
-    if shoulder_width < 0.03:
-        return None
-
-    mid_shoulder_y = (ls.y + rs.y) / 2
-    mid_hip_y = (lh.y + rh.y) / 2
-    torso_length = abs(mid_hip_y - mid_shoulder_y)
-    if torso_length < 0.03:
-        torso_length = shoulder_width * 1.4  # respaldo si no se ven bien las caderas
-
-    return {
-        "shoulder_tilt": abs(ls.y - rs.y) / shoulder_width,
-        "forward_head": (ls.z - nose.z) / shoulder_width,
-        "neck_gap": abs((le.y + re.y) / 2 - mid_shoulder_y) / torso_length,
-    }
+    return core.metrics_from_keypoints(core.keypoints_from_landmarks(landmarks))
 
 
 def evaluate_posture(landmarks, thresholds=None):
@@ -126,6 +100,95 @@ def summarize_aspects(aspect_percents, good_threshold=70.0):
     return [text for _, text in items]
 
 
+# ------------------------------------------------------- calibracion personal
+# Cuanto se puede alejar un umbral calibrado del valor por defecto. Sin estos
+# topes, una persona que se evalua encorvada terminaria con umbrales que
+# aprueban su mala postura para siempre.
+CALIBRATION_BOUNDS = {
+    "shoulder_tilt_max": (0.7, 1.6),
+    "forward_head_max": (0.7, 1.6),
+    "neck_compression_min": (0.6, 1.3),
+}
+
+# Minimos para que valga la pena calibrar: pocas muestras o una postura de
+# referencia mala no sirven como referencia.
+CALIBRATION_MIN_SAMPLES = 20
+CALIBRATION_MIN_PERCENT = 60.0
+
+
+def _percentile(values, pct):
+    """Percentil sin numpy (interpolacion lineal), para poder testear este
+    modulo sin dependencias pesadas."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    pos = (len(ordered) - 1) * (pct / 100.0)
+    low = math.floor(pos)
+    high = math.ceil(pos)
+    if low == high:
+        return ordered[int(pos)]
+    return ordered[low] + (ordered[high] - ordered[low]) * (pos - low)
+
+
+class PostureCalibrator:
+    """Acumula las metricas de la evaluacion inicial para derivar umbrales
+    propios de esa persona y esa camara.
+
+    Los umbrales por defecto son iguales para todos, pero cada cuerpo y cada
+    encuadre son distintos: lo que para una persona es 'hombros nivelados'
+    puede medir distinto en otra.
+    """
+
+    def __init__(self):
+        self._samples = {"shoulder_tilt": [], "forward_head": [], "neck_gap": []}
+
+    def record(self, metrics):
+        if not metrics:
+            return
+        for key, bucket in self._samples.items():
+            value = metrics.get(key)
+            if value is not None and math.isfinite(value):
+                bucket.append(float(value))
+
+    @property
+    def samples(self):
+        return len(self._samples["shoulder_tilt"])
+
+    def suggest(self, base=None, percent_correct=100.0):
+        """Devuelve (umbrales, motivo). Si no hay datos suficientes o la postura
+        de referencia era mala, devuelve los umbrales base sin tocar."""
+        base = base or DEFAULT_THRESHOLDS
+
+        if self.samples < CALIBRATION_MIN_SAMPLES:
+            return base, f"Pocas muestras ({self.samples}) para calibrar; dejo los umbrales generales."
+        if percent_correct < CALIBRATION_MIN_PERCENT:
+            return base, (
+                "No calibro con una postura de referencia mala: primero mejora la "
+                "postura y vuelve a evaluarte."
+            )
+
+        # Para hombros y cabeza adelantada (menos es mejor) tomamos el percentil
+        # 75 de la persona con un margen; para la altura de cabeza (mas es
+        # mejor) el percentil 25 con margen hacia abajo.
+        tilt = _percentile(self._samples["shoulder_tilt"], 75)
+        head = _percentile(self._samples["forward_head"], 75)
+        gap = _percentile(self._samples["neck_gap"], 25)
+
+        def clamp(value, default, key):
+            low, high = CALIBRATION_BOUNDS[key]
+            return max(default * low, min(default * high, value))
+
+        suggested = replace(
+            base,
+            shoulder_tilt_max=clamp(tilt * 1.15, base.shoulder_tilt_max, "shoulder_tilt_max"),
+            forward_head_max=clamp(head * 1.15, base.forward_head_max, "forward_head_max"),
+            neck_compression_min=clamp(gap * 0.90, base.neck_compression_min, "neck_compression_min"),
+        )
+        return suggested, f"Umbrales ajustados a tu cuerpo y tu cámara ({self.samples} muestras)."
+
+
 def detect_context(landmarks):
     """Intenta inferir si la persona esta sentada o de pie a partir del angulo
     cadera-rodilla-tobillo. Si las piernas no son visibles en el encuadre (muy
@@ -154,29 +217,38 @@ CONTEXT_LABELS = {
 
 class SessionStats:
     """Contador simple de % de tiempo en buena postura durante toda la sesion
-    de uso (no solo la evaluacion inicial de 30s)."""
+    de uso (no solo la evaluacion inicial de 30s). Tambien lleva cual fue el
+    problema mas frecuente, para guardarlo en el historial."""
 
     def __init__(self):
         self._start_time = None
         self._correct = 0
         self._incorrect = 0
+        self._issues = {}
 
     def start(self):
         self._start_time = time.time()
         self._correct = 0
         self._incorrect = 0
+        self._issues = {}
 
-    def record(self, is_correct):
+    def record(self, is_correct, feedback_text=None):
         if is_correct is None:
             return
         if is_correct:
             self._correct += 1
         else:
             self._incorrect += 1
+            if feedback_text and feedback_text != "Buena postura":
+                self._issues[feedback_text] = self._issues.get(feedback_text, 0) + 1
+
+    @property
+    def samples(self):
+        return self._correct + self._incorrect
 
     @property
     def percent_correct(self):
-        total = self._correct + self._incorrect
+        total = self.samples
         return (self._correct / total * 100) if total else 0.0
 
     @property
@@ -185,8 +257,19 @@ class SessionStats:
             return 0.0
         return (time.time() - self._start_time) / 60.0
 
+    @property
+    def started_at(self):
+        return self._start_time
+
+    @property
+    def common_issue(self):
+        """El aviso que mas se repitio, o None si no hubo problemas."""
+        if not self._issues:
+            return None
+        return max(self._issues.items(), key=lambda item: item[1])[0]
+
     def summary_text(self):
-        total = self._correct + self._incorrect
+        total = self.samples
         if total == 0:
             return ""
         minutos = self.elapsed_minutes

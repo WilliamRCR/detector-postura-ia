@@ -1,7 +1,17 @@
 """Recolecta un dataset de posturas directamente desde la webcam, sin fotos manuales.
 
-Graba tus landmarks de MediaPipe durante varios segundos mientras mantienes una
-postura, los aumenta (espejo + ruido leve) y los agrega a dataset_posturas.npz.
+Esta es la forma recomendada de armar el dataset: graba tus landmarks de
+MediaPipe de frente a la camara, igual que como se usa la app. Las fotos de
+dataset/ son casi todas de perfil, asi que el modelo aprendia una vista y se
+usaba en otra.
+
+Dos diferencias respecto a la version anterior:
+
+- Guarda las muestras crudas, sin espejo ni ruido. El aumento lo hace train.py
+  despues de dividir, para que la precision de prueba sea real.
+- Guarda a que sesion pertenece cada muestra (grupo), para que train.py pueda
+  dividir por sesion y no mezclar frames casi identicos entre entrenamiento y
+  prueba.
 
 Uso:
     python collect_data.py 1 20 --contexto sentado    # 1 = postura correcta
@@ -17,66 +27,62 @@ from datetime import datetime
 from pathlib import Path
 
 import cv2
-import mediapipe as mp
 import numpy as np
 
-DATASET_FILE = "dataset_posturas.npz"
+import core
+from config import AppConfig
+
 LOG_FILE = "dataset_sessions.json"
 SAMPLE_INTERVAL = 0.4  # segundos entre muestras automaticas
 COUNTDOWN = 3  # segundos de preparacion antes de empezar a grabar
 
-# Pares de landmarks izquierda/derecha de MediaPipe Pose (33 puntos), para
-# poder espejar una muestra intercambiando el lado correcto.
-MIRROR_PAIRS = [
-    (1, 4), (2, 5), (3, 6), (7, 8), (9, 10),
-    (11, 12), (13, 14), (15, 16), (17, 18), (19, 20),
-    (21, 22), (23, 24), (25, 26), (27, 28), (29, 30), (31, 32),
-]
-
-
-def mirror_keypoints(kp):
-    pts = kp.reshape(33, 3).copy()
-    pts[:, 0] = 1.0 - pts[:, 0]
-    for left, right in MIRROR_PAIRS:
-        pts[[left, right]] = pts[[right, left]]
-    return pts.reshape(-1)
-
-
-def jitter_keypoints(kp, std=0.01):
-    return kp + np.random.normal(0, std, size=kp.shape).astype(kp.dtype)
-
-
-def get_keypoints(landmarks):
-    kp = [v for lm in landmarks for v in (lm.x, lm.y, lm.z)]
-    return np.array(kp, dtype=np.float32)
-
 
 def load_existing():
-    if Path(DATASET_FILE).exists():
-        data = np.load(DATASET_FILE)
-        return list(data["X"]), list(data["y"])
-    return [], []
+    """Devuelve (X, y, groups) del dataset existente, o listas vacias."""
+    path = Path(core.DATASET_FILE)
+    if not path.exists():
+        return [], [], []
+    data = np.load(path, allow_pickle=False)
+    X = list(data["X"])
+    y = list(data["y"])
+    if "groups" in data.files:
+        groups = list(np.asarray(data["groups"]).astype(str))
+    else:
+        # Dataset viejo sin grupos: cada muestra queda en su propio grupo para
+        # no fingir que vienen de la misma sesion.
+        groups = [f"legado_{i}" for i in range(len(X))]
+    return X, y, groups
 
 
-def save_dataset(X, y):
-    np.savez(DATASET_FILE, X=np.array(X), y=np.array(y))
+def save_dataset(X, y, groups):
+    np.savez(
+        core.DATASET_FILE,
+        X=np.asarray(X, dtype=np.float32),
+        y=np.asarray(y, dtype=np.int64),
+        groups=np.asarray(groups, dtype="U64"),
+    )
 
 
-def log_session(label_name, contexto, capturadas, guardadas):
+def log_session(session_id, label_name, contexto, capturadas, medibles):
     entry = {
+        "sesion": session_id,
         "fecha": datetime.now().isoformat(timespec="seconds"),
         "etiqueta": label_name,
         "contexto": contexto,
         "muestras_capturadas": capturadas,
-        "muestras_guardadas": guardadas,
+        "muestras_frontales": medibles,
     }
     log = []
-    if Path(LOG_FILE).exists():
-        with open(LOG_FILE, "r", encoding="utf-8") as f:
-            log = json.load(f)
+    path = Path(LOG_FILE)
+    if path.exists():
+        try:
+            log = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            log = []
+    if not isinstance(log, list):
+        log = []
     log.append(entry)
-    with open(LOG_FILE, "w", encoding="utf-8") as f:
-        json.dump(log, f, indent=2, ensure_ascii=False)
+    path.write_text(json.dumps(log, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def main():
@@ -89,23 +95,32 @@ def main():
         default="mixto",
         help="solo para llevar registro de si cubriste sentado y de pie",
     )
+    parser.add_argument("--camara", type=int, default=None, help="indice de camara (default: config.json)")
     args = parser.parse_args()
 
+    cfg = AppConfig.load()
+    camera_index = args.camara if args.camara is not None else cfg.camera_index
+
     label_name = "CORRECTA" if args.label == 1 else "INCORRECTA"
+    session_id = f"{datetime.now():%Y%m%d_%H%M%S}_{label_name.lower()}_{args.contexto}"
+
     print(f"=== RECOLECCION DESDE WEBCAM: {label_name} ({args.contexto}) ===")
-    print(f"Prepárate para mantener esa postura durante {args.duracion}s.")
+    print(f"Prepárate para mantener esa postura durante {args.duracion}s, de frente a la cámara.")
     print("Presiona 'q' en cualquier momento para cancelar.")
+
+    import mediapipe as mp
 
     mp_drawing = mp.solutions.drawing_utils
     mp_pose = mp.solutions.pose
-    pose = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5, min_tracking_confidence=0.5)
+    pose = core.new_pose(static=False)
 
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(camera_index)
     if not cap.isOpened():
-        print("Error: no se pudo abrir la camara.")
+        print(f"Error: no se pudo abrir la camara {camera_index}.")
         return
 
     raw_samples = []
+    descartadas_perfil = 0
     start_time = None
     last_sample_at = 0.0
     program_start = time.time()
@@ -115,7 +130,8 @@ def main():
         if not ret:
             break
 
-        frame = cv2.flip(frame, 1)
+        if cfg.flip_camera:
+            frame = cv2.flip(frame, 1)
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = pose.process(rgb)
 
@@ -134,10 +150,17 @@ def main():
                 break
 
             if results.pose_landmarks and (now - last_sample_at) >= SAMPLE_INTERVAL:
-                raw_samples.append(get_keypoints(results.pose_landmarks.landmark))
+                kp = core.keypoints_from_landmarks(results.pose_landmarks.landmark)
+                # Solo guardamos muestras frontales: son las que coinciden con
+                # como se usa la app de verdad.
+                if core.is_frontal(kp):
+                    raw_samples.append(kp)
+                else:
+                    descartadas_perfil += 1
                 last_sample_at = now
 
-            texto = f"Grabando...  {restante:.0f}s  |  muestras: {len(raw_samples)}"
+            aviso = f"  |  de perfil: {descartadas_perfil}" if descartadas_perfil else ""
+            texto = f"Grabando...  {restante:.0f}s  |  muestras: {len(raw_samples)}{aviso}"
             color = (0, 255, 0)
 
         if results.pose_landmarks:
@@ -145,7 +168,7 @@ def main():
 
         h, w, _ = frame.shape
         cv2.rectangle(frame, (0, 0), (w, 50), (30, 30, 30), -1)
-        cv2.putText(frame, texto, (15, 33), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+        cv2.putText(frame, texto, (15, 33), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
         cv2.imshow("Recoleccion de Postura", frame)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -158,30 +181,29 @@ def main():
     cv2.destroyAllWindows()
 
     if not raw_samples:
-        print("No se capturo ninguna muestra (no se te detecto). Intenta de nuevo con mejor luz/encuadre.")
+        print(
+            "No se guardo ninguna muestra frontal. Ubicate de frente a la camara, "
+            "con los dos hombros visibles, y vuelve a intentar."
+        )
+        if descartadas_perfil:
+            print(f"(Se descartaron {descartadas_perfil} muestras por estar de perfil.)")
         return
 
-    # Aumento de datos: cada muestra real aporta su espejo (lado contrario)
-    # y una variante con ruido leve, multiplicando el dataset x3 sin grabar mas.
-    X_new = []
-    for kp in raw_samples:
-        X_new.append(kp)
-        X_new.append(mirror_keypoints(kp))
-        X_new.append(jitter_keypoints(kp))
-
     label_value = 1 if args.label == 1 else 0
-    y_new = [label_value] * len(X_new)
+    X_all, y_all, groups_all = load_existing()
+    X_all.extend(raw_samples)
+    y_all.extend([label_value] * len(raw_samples))
+    groups_all.extend([session_id] * len(raw_samples))
+    save_dataset(X_all, y_all, groups_all)
+    log_session(session_id, label_name, args.contexto, len(raw_samples) + descartadas_perfil, len(raw_samples))
 
-    X_all, y_all = load_existing()
-    X_all.extend(X_new)
-    y_all.extend(y_new)
-    save_dataset(X_all, y_all)
-    log_session(label_name, args.contexto, len(raw_samples), len(X_new))
-
-    print(f"\nCapturadas {len(raw_samples)} muestras reales -> {len(X_new)} tras aumento (espejo + ruido).")
-    print(f"Dataset total ahora: {len(X_all)} muestras.")
+    print(f"\nGuardadas {len(raw_samples)} muestras frontales (sesion {session_id}).")
+    if descartadas_perfil:
+        print(f"Descartadas {descartadas_perfil} por estar de perfil.")
+    print(f"Dataset total ahora: {len(X_all)} muestras en {len(set(groups_all))} sesiones.")
+    print("El espejo y el ruido los agrega train.py, despues de dividir.")
     print("Repite con las otras combinaciones (correcta/incorrecta x sentado/de_pie).")
-    print("Cuando tengas suficientes, ejecuta: python train.py")
+    print("Cuando tengas al menos 4 sesiones, ejecuta: python train.py")
 
 
 if __name__ == "__main__":
