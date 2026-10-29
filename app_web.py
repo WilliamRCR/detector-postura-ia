@@ -1,46 +1,56 @@
+"""Version web (Flask): mismo detector, en el navegador.
+
+Incluye evaluacion inicial con calibracion personal, avisos por tiempo
+sostenido, recordatorios de pausa, modo privacidad, ajustes editables y la
+grafica semanal del historial.
+"""
+import threading
 import time
 
 import cv2
-import mediapipe as mp
 import numpy as np
-import joblib
-import threading
-from flask import Flask, Response, jsonify, render_template
+from flask import Flask, Response, jsonify, render_template, request
 
+import core
 from assessment import PostureAssessment
+from config import AppConfig
+from history import SessionHistory
 from posture_metrics import (
     CONTEXT_LABELS,
     SessionStats,
     detect_context,
     evaluate_aspects,
-    evaluate_posture,
     summarize_aspects,
 )
-from smoothing import MajorityVoteSmoother
-from voice_feedback import VoiceFeedback, PostureVoiceCoach
+from voice_feedback import BreakReminder, DesktopNotifier, PostureVoiceCoach, VoiceFeedback
 
 app = Flask(__name__)
 
-mp_drawing = mp.solutions.drawing_utils
-mp_pose = mp.solutions.pose
+cfg = AppConfig.load()
 
 try:
-    model = joblib.load("modelo_postura.pkl")
-    scaler = joblib.load("scaler.pkl")
+    predictor = core.PosturePredictor.load(thresholds=cfg.thresholds())
     MODEL_OK = True
-except FileNotFoundError:
+    MODEL_ERROR = ""
+except core.ModelError as exc:
+    predictor = None
     MODEL_OK = False
+    MODEL_ERROR = str(exc)
 
-pose = mp_pose.Pose(
-    static_image_mode=False,
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5,
+pose = core.new_pose()
+
+voice = VoiceFeedback(enabled=cfg.voice_enabled, rate=cfg.voice_rate, cooldown=cfg.voice_cooldown)
+notifier = DesktopNotifier(enabled=cfg.desktop_notifications)
+coach = PostureVoiceCoach(
+    voice,
+    min_bad_seconds=cfg.alert_after_seconds,
+    repeat_seconds=cfg.alert_repeat_seconds,
+    notifier=notifier,
 )
-
-voice = VoiceFeedback()
-coach = PostureVoiceCoach(voice)
+breaks = BreakReminder(interval_minutes=cfg.break_minutes, enabled=cfg.break_reminders)
 session = SessionStats()
-assessment = PostureAssessment(duration=30.0)
+assessment = PostureAssessment(duration=cfg.assessment_seconds)
+history = SessionHistory()
 
 # Estado compartido entre hilos
 state = {
@@ -52,8 +62,11 @@ state = {
     "context": "",
     "session_info": "",
     "camera_error": "",
-    "voice_available": voice.enabled,
+    "voice_available": voice.available,
     "voice_on": voice.enabled,
+    "privacy": cfg.privacy_mode,
+    "break_in": None,
+    "calibration_note": "",
 }
 state_lock = threading.Lock()
 
@@ -63,35 +76,42 @@ latest_frame = None
 frame_lock = threading.Lock()
 
 
-def get_keypoints(landmarks):
-    kp = []
-    for lm in landmarks:
-        kp.extend([lm.x, lm.y, lm.z])
-    return np.array(kp)
+def _apply_config():
+    """Aplica config.json en caliente a los objetos ya creados."""
+    if predictor is not None:
+        predictor.thresholds = cfg.thresholds()
+    voice.set_enabled(cfg.voice_enabled)
+    voice.set_rate(cfg.voice_rate)
+    notifier.set_enabled(cfg.desktop_notifications)
+    coach.configure(
+        min_bad_seconds=cfg.alert_after_seconds,
+        repeat_seconds=cfg.alert_repeat_seconds,
+    )
+    breaks.interval_minutes = cfg.break_minutes
+    breaks.enabled = cfg.break_reminders
+    assessment.duration = cfg.assessment_seconds
+    with state_lock:
+        state["voice_on"] = voice.enabled
+        state["privacy"] = cfg.privacy_mode
 
 
-def predict(landmarks, status_smoother, feedback_smoother):
-    kp = get_keypoints(landmarks)
-    kp_scaled = scaler.transform([kp])
-    pred = model.predict(kp_scaled)[0]
-    is_correct = status_smoother.update(pred) == 1
-    feedback_text = feedback_smoother.update(evaluate_posture(landmarks))
-    return is_correct, feedback_text
+def _save_session():
+    if not cfg.save_history or session.samples == 0:
+        return
+    history.save_stats(session)
 
 
 def capture_loop():
     """Corre continuamente desde que arranca el servidor: la camara queda
     activa (vista previa) aunque nadie haya presionado INICIAR todavia."""
     global cap, latest_frame
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(cfg.camera_index)
     if not cap.isOpened():
         with state_lock:
             state["running"] = False
-            state["camera_error"] = "No se pudo abrir la cámara"
+            state["camera_error"] = f"No se pudo abrir la cámara {cfg.camera_index}"
         return
 
-    status_smoother = MajorityVoteSmoother(window=7)
-    feedback_smoother = MajorityVoteSmoother(window=5)
     last_verdict = None
     verdict_hold_until = 0.0
 
@@ -104,6 +124,7 @@ def capture_loop():
         with state_lock:
             running = state["running"]
             testing_started = state["testing_started"]
+            privacy = state["privacy"]
         if not running:
             break
 
@@ -114,7 +135,8 @@ def capture_loop():
                 state["camera_error"] = "Se perdió la conexión con la cámara"
             break
 
-        frame = cv2.flip(frame, 1)
+        if cfg.flip_camera:
+            frame = cv2.flip(frame, 1)
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = pose.process(rgb)
 
@@ -123,9 +145,11 @@ def capture_loop():
         color = "gray"
         dot, line = (150, 150, 150), (100, 100, 100)
         context_text = ""
+        calibration_note = ""
 
         if not MODEL_OK:
-            pass
+            status = "Modelo no disponible"
+            feedback = MODEL_ERROR
 
         elif not testing_started:
             # --- Fase 0: vista previa, esperando a que presionen INICIAR ---
@@ -136,11 +160,10 @@ def capture_loop():
             if results.pose_landmarks:
                 dot, line = (150, 150, 220), (110, 110, 180)
             else:
-                status_smoother.reset()
-                feedback_smoother.reset()
+                predictor.reset()
 
         elif assessment.active:
-            # --- Fase 1: evaluacion inicial de 30s, sin corregir en vivo ---
+            # --- Fase 1: evaluacion inicial, sin corregir en vivo ---
             remaining = int(assessment.remaining) + 1
             status = f"EVALUANDO... {remaining}s"
             color = "blue"
@@ -148,19 +171,23 @@ def capture_loop():
 
             if results.pose_landmarks:
                 landmarks = results.pose_landmarks.landmark
-                is_correct, raw_feedback = predict(landmarks, status_smoother, feedback_smoother)
+                is_correct, raw_feedback = predictor.predict(landmarks)
                 context = detect_context(landmarks)
                 context_text = CONTEXT_LABELS[context]
-                aspects = evaluate_aspects(landmarks)
-                assessment.record(is_correct, raw_feedback, context, aspects)
-                session.record(is_correct)
+                aspects = evaluate_aspects(landmarks, cfg.thresholds())
+                metrics = core.metrics_from_keypoints(core.keypoints_from_landmarks(landmarks))
+                assessment.record(is_correct, raw_feedback, context, aspects, metrics)
+                session.record(is_correct, raw_feedback)
                 dot, line = (241, 196, 15), (243, 156, 18)
             else:
-                status_smoother.reset()
-                feedback_smoother.reset()
+                predictor.reset()
 
             if assessment.time_up:
-                result = assessment.finish()
+                result = assessment.finish(base_thresholds=cfg.thresholds())
+                thresholds = result.get("thresholds")
+                if thresholds is not None:
+                    cfg.set_thresholds(thresholds)
+                    predictor.thresholds = thresholds
                 last_verdict = result
                 verdict_hold_until = time.time() + 10.0
                 voice.say_now(result["verdict"])
@@ -170,18 +197,25 @@ def capture_loop():
             result = last_verdict
             status = "BUENA POSTURA" if result["good"] else "A MEJORAR"
             color = "green" if result["good"] else "red"
-            checklist = summarize_aspects(result["aspect_percents"])
-            feedback = "\n".join([f"{result['percent_correct']:.0f}% correcta en la evaluación"] + checklist)
+            lineas = [f"{result['percent_correct']:.0f}% correcta en la evaluación"]
+            lineas += summarize_aspects(result["aspect_percents"])
+            calibration_note = result.get("calibration_note", "")
+            if calibration_note:
+                lineas.append(calibration_note)
+            feedback = "\n".join(lineas)
             dot, line = (46, 204, 113), (39, 174, 96)
 
         elif results.pose_landmarks:
             # --- Fase 3: coaching continuo (comportamiento normal) ---
             landmarks = results.pose_landmarks.landmark
-            is_correct, feedback = predict(landmarks, status_smoother, feedback_smoother)
+            is_correct, feedback = predictor.predict(landmarks)
             context_text = CONTEXT_LABELS[detect_context(landmarks)]
-            session.record(is_correct)
+            session.record(is_correct, feedback)
 
-            if is_correct:
+            if is_correct is None:
+                status = "Ponte de frente a la cámara"
+                color = "blue"
+            elif is_correct:
                 status = "CORRECTA"
                 color = "green"
                 dot, line = (46, 204, 113), (39, 174, 96)
@@ -189,20 +223,36 @@ def capture_loop():
                 status = "INCORRECTA"
                 color = "red"
                 dot, line = (231, 76, 60), (192, 57, 43)
+                segundos = coach.bad_seconds
+                if 0 < segundos < cfg.alert_after_seconds:
+                    status += f"  ({segundos:.0f}s)"
 
             coach.update(is_correct, feedback)
 
         else:
-            status_smoother.reset()
-            feedback_smoother.reset()
+            predictor.reset()
+            coach.reset()
+
+        # --- Recordatorio de pausas (independiente de la postura) ---
+        if testing_started and breaks.due():
+            mensaje = breaks.message()
+            voice.say_now(mensaje)
+            notifier.notify("Hora de una pausa", mensaje, force=True)
+            feedback = mensaje
+
+        if privacy:
+            # Modo privacidad: solo el esqueleto sobre fondo negro.
+            frame = np.zeros_like(frame)
 
         if results.pose_landmarks:
-            mp_drawing.draw_landmarks(
+            import mediapipe as mp
+
+            mp.solutions.drawing_utils.draw_landmarks(
                 frame,
                 results.pose_landmarks,
-                mp_pose.POSE_CONNECTIONS,
-                mp_drawing.DrawingSpec(color=dot[::-1], thickness=2, circle_radius=4),
-                mp_drawing.DrawingSpec(color=line[::-1], thickness=2),
+                mp.solutions.pose.POSE_CONNECTIONS,
+                mp.solutions.drawing_utils.DrawingSpec(color=dot[::-1], thickness=2, circle_radius=4),
+                mp.solutions.drawing_utils.DrawingSpec(color=line[::-1], thickness=2),
             )
 
         with state_lock:
@@ -211,6 +261,11 @@ def capture_loop():
             state["color"] = color
             state["context"] = context_text
             state["session_info"] = session.summary_text()
+            state["break_in"] = (
+                round(breaks.minutes_until_next) if testing_started and breaks.enabled else None
+            )
+            if calibration_note:
+                state["calibration_note"] = calibration_note
 
         _, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
         with frame_lock:
@@ -222,6 +277,7 @@ def capture_loop():
 
 
 def generate_frames():
+    last_sent = None
     while True:
         with state_lock:
             running = state["running"]
@@ -229,14 +285,23 @@ def generate_frames():
             break
         with frame_lock:
             frame = latest_frame
-        if frame is None:
+        if frame is None or frame is last_sent:
+            # Sin frame nuevo: una pausa corta evita quemar un nucleo entero
+            # girando en vacio.
+            time.sleep(0.01)
             continue
+        last_sent = frame
         yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
 
 
 @app.route("/")
 def index():
-    return render_template("index.html", model_ok=MODEL_OK, voice_available=voice.enabled)
+    return render_template(
+        "index.html",
+        model_ok=MODEL_OK,
+        model_error=MODEL_ERROR,
+        voice_available=voice.available,
+    )
 
 
 @app.route("/video_feed")
@@ -260,6 +325,8 @@ def api_status():
             session_info=state["session_info"],
             camera_error=state["camera_error"],
             voice_on=state["voice_on"],
+            privacy=state["privacy"],
+            break_in=state["break_in"],
         )
 
 
@@ -269,13 +336,23 @@ def api_voice():
         state["voice_on"] = not state["voice_on"]
         voice.set_enabled(state["voice_on"])
         voice_on = state["voice_on"]
+    cfg.update({"voice_enabled": voice_on})
     return jsonify(ok=True, voice_on=voice_on)
+
+
+@app.route("/api/privacy", methods=["POST"])
+def api_privacy():
+    with state_lock:
+        state["privacy"] = not state["privacy"]
+        privacy = state["privacy"]
+    cfg.update({"privacy_mode": privacy})
+    return jsonify(ok=True, privacy=privacy)
 
 
 @app.route("/api/start", methods=["POST"])
 def api_start():
     if not MODEL_OK:
-        return jsonify(ok=False, error="Modelo no encontrado")
+        return jsonify(ok=False, error=MODEL_ERROR or "Modelo no encontrado")
     with state_lock:
         if not state["running"]:
             return jsonify(ok=False, error=state["camera_error"] or "La cámara no está disponible")
@@ -287,18 +364,23 @@ def api_start():
         state["color"] = "gray"
         state["context"] = ""
         state["session_info"] = ""
+        state["calibration_note"] = ""
+    predictor.reset()
     coach.reset()
+    assessment.duration = cfg.assessment_seconds
     assessment.start()
     session.start()
+    breaks.start()
     voice.say_now(
         "Mantén tu postura habitual, sentado o de pie, durante los próximos "
-        "treinta segundos. Voy a evaluarla."
+        f"{int(cfg.assessment_seconds)} segundos. Voy a evaluarla."
     )
     return jsonify(ok=True)
 
 
 @app.route("/api/stop", methods=["POST"])
 def api_stop():
+    _save_session()
     with state_lock:
         state["testing_started"] = False
         state["status"] = "Sin detectar"
@@ -306,7 +388,38 @@ def api_stop():
         state["color"] = "gray"
         state["context"] = ""
         state["session_info"] = ""
+        state["break_in"] = None
+    coach.reset()
     return jsonify(ok=True)
+
+
+@app.route("/api/history")
+def api_history():
+    if not cfg.save_history:
+        return jsonify(enabled=False, week=[], totals={})
+    return jsonify(
+        enabled=True,
+        week=history.weekly_summary(days=7),
+        totals=history.totals(days=7),
+        recent=history.recent_sessions(limit=8),
+    )
+
+
+@app.route("/api/config", methods=["GET", "POST"])
+def api_config():
+    if request.method == "GET":
+        return jsonify(ok=True, config=cfg.as_dict())
+
+    payload = request.get_json(silent=True) or {}
+    # Cambiar un umbral a mano deja de ser calibracion automatica.
+    if any(key in payload for key in ("shoulder_tilt_max", "forward_head_max", "neck_compression_min")):
+        payload.setdefault("calibrated", False)
+    cfg.update(payload)
+    _apply_config()
+    aviso = ""
+    if "camera_index" in payload:
+        aviso = "El cambio de cámara se aplica al reiniciar la app."
+    return jsonify(ok=True, config=cfg.as_dict(), aviso=aviso)
 
 
 if __name__ == "__main__":
@@ -315,4 +428,10 @@ if __name__ == "__main__":
     capture_thread = threading.Thread(target=capture_loop, daemon=True)
     capture_thread.start()
     print("Abre tu navegador en: http://localhost:5000")
-    app.run(debug=False, threaded=True)
+    try:
+        app.run(debug=False, threaded=True)
+    finally:
+        with state_lock:
+            state["running"] = False
+        _save_session()
+        voice.stop()

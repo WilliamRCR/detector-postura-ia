@@ -1,9 +1,10 @@
-"""Feedback por voz (TTS local, sin conexion a internet) con anti-spam."""
+"""Feedback por voz (TTS local, sin conexion a internet) con anti-spam,
+recordatorios de pausa y notificaciones nativas de Windows."""
 import queue
 import threading
 import time
 
-import pyttsx3
+from smoothing import SustainedStateTimer
 
 
 class VoiceFeedback:
@@ -20,6 +21,8 @@ class VoiceFeedback:
 
         if self.enabled:
             try:
+                import pyttsx3  # noqa: PLC0415  (opcional: la app funciona sin voz)
+
                 self._engine = pyttsx3.init()
                 self._engine.setProperty("rate", rate)
             except Exception as exc:
@@ -29,6 +32,11 @@ class VoiceFeedback:
         if self.enabled:
             self._thread = threading.Thread(target=self._run, daemon=True)
             self._thread.start()
+
+    @property
+    def available(self):
+        """True si hay motor TTS, aunque la voz este apagada ahora mismo."""
+        return self._engine is not None
 
     def say(self, message):
         if not self.enabled or not message:
@@ -66,13 +74,28 @@ class VoiceFeedback:
             with self._queue.mutex:
                 self._queue.queue.clear()
 
+    def set_rate(self, rate):
+        if self._engine is None:
+            return
+        try:
+            self._engine.setProperty("rate", int(rate))
+        except Exception:
+            pass
+
     def _run(self):
         while not self._stop_event.is_set():
             message = self._queue.get()
             if message is None:
                 break
-            self._engine.say(message)
-            self._engine.runAndWait()
+            try:
+                self._engine.say(message)
+                self._engine.runAndWait()
+            except Exception as exc:
+                # Si el motor TTS muere a mitad de sesion, la app sigue sin voz
+                # en vez de arrastrar el hilo a un error silencioso.
+                print(f"Error al hablar ({exc}), apago la voz.")
+                self.enabled = False
+                break
 
     def stop(self):
         if self._engine is None:
@@ -81,28 +104,163 @@ class VoiceFeedback:
         self._queue.put(None)
 
 
+class DesktopNotifier:
+    """Notificaciones nativas de Windows via plyer, para que los avisos lleguen
+    aunque la ventana este minimizada.
+
+    plyer es opcional: si no esta instalado, la app funciona igual y solo se
+    pierden las notificaciones de escritorio.
+    """
+
+    APP_NAME = "Detector de Postura IA"
+
+    def __init__(self, enabled=True, cooldown=30.0):
+        self.enabled = enabled
+        self._cooldown = cooldown
+        self._last_at = 0.0
+        self._notify = None
+
+        if not enabled:
+            return
+        try:
+            from plyer import notification  # noqa: PLC0415  (dependencia opcional)
+
+            self._notify = notification.notify
+        except Exception as exc:
+            print(f"Notificaciones de escritorio no disponibles ({exc}).")
+            self.enabled = False
+
+    @property
+    def available(self):
+        return self._notify is not None
+
+    def set_enabled(self, enabled):
+        self.enabled = bool(enabled) and self._notify is not None
+
+    def notify(self, title, message, force=False):
+        if not self.enabled or self._notify is None:
+            return False
+        now = time.time()
+        if not force and (now - self._last_at) < self._cooldown:
+            return False
+        self._last_at = now
+        try:
+            self._notify(
+                title=title,
+                message=message,
+                app_name=self.APP_NAME,
+                timeout=8,
+            )
+            return True
+        except Exception as exc:
+            print(f"No pude mostrar la notificacion ({exc}).")
+            self.enabled = False
+            return False
+
+
+class BreakReminder:
+    """Cada 30-45 minutos pide levantarse y estirarse.
+
+    Pasar horas sentado cansa aunque la postura sea buena, asi que este aviso
+    no depende de como estes sentado: solo del tiempo.
+    """
+
+    MESSAGES = (
+        "Llevas un buen rato sentado. Levántate y estírate un minuto.",
+        "Hora de una pausa: ponte de pie, estira la espalda y mueve el cuello.",
+        "Pausa activa: camina un poco y descansa la vista de la pantalla.",
+    )
+
+    def __init__(self, interval_minutes=35, enabled=True):
+        self.interval_minutes = interval_minutes
+        self.enabled = enabled
+        self._last_at = None
+        self._count = 0
+
+    def start(self, now=None):
+        self._last_at = time.time() if now is None else now
+        self._count = 0
+
+    @property
+    def minutes_until_next(self):
+        if self._last_at is None:
+            return float(self.interval_minutes)
+        elapsed = (time.time() - self._last_at) / 60.0
+        return max(0.0, self.interval_minutes - elapsed)
+
+    def due(self, now=None):
+        """True (una sola vez por intervalo) cuando toca la pausa."""
+        if not self.enabled:
+            return False
+        now = time.time() if now is None else now
+        if self._last_at is None:
+            self._last_at = now
+            return False
+        if (now - self._last_at) < self.interval_minutes * 60.0:
+            return False
+        self._last_at = now
+        self._count += 1
+        return True
+
+    def message(self):
+        """Rota el texto para que no suene igual todas las veces."""
+        return self.MESSAGES[(self._count - 1) % len(self.MESSAGES)]
+
+    def reset(self):
+        self._last_at = None
+        self._count = 0
+
+
 class PostureVoiceCoach:
     """Decide que decir a partir del estado de postura ya suavizado.
 
-    Mientras la postura es incorrecta, repite el consejo (respetando el
-    cooldown de VoiceFeedback). Cuando se corrige, felicita una sola vez
-    y queda en silencio hasta que vuelva a detectarse una mala postura.
+    Antes avisaba en cuanto el voto de 7 frames daba 'incorrecta', o sea por
+    movimientos de menos de medio segundo. Ahora el aviso espera a que la mala
+    postura se sostenga varios segundos seguidos (SustainedStateTimer), y la
+    felicitacion suena una sola vez al corregirse.
     """
 
-    def __init__(self, voice_feedback, praise="Buena postura, sigue asi"):
+    def __init__(
+        self,
+        voice_feedback,
+        praise="Buena postura, sigue asi",
+        min_bad_seconds=6.0,
+        repeat_seconds=25.0,
+        notifier=None,
+    ):
         self._voice = voice_feedback
         self._praise = praise
-        self._was_bad = False
+        self._notifier = notifier
+        self._timer = SustainedStateTimer(
+            min_seconds=min_bad_seconds, repeat_seconds=repeat_seconds
+        )
+        self._last_feedback = ""
 
-    def update(self, is_correct, feedback_text):
-        if is_correct is None:
-            return
-        if not is_correct:
-            self._voice.say(feedback_text)
-            self._was_bad = True
-        elif self._was_bad:
+    @property
+    def bad_seconds(self):
+        return self._timer.bad_seconds
+
+    def configure(self, min_bad_seconds=None, repeat_seconds=None):
+        if min_bad_seconds is not None:
+            self._timer.min_seconds = min_bad_seconds
+        if repeat_seconds is not None:
+            self._timer.repeat_seconds = repeat_seconds
+
+    def update(self, is_correct, feedback_text, now=None):
+        """Devuelve el evento emitido ("alert", "praise" o None)."""
+        if feedback_text:
+            self._last_feedback = feedback_text
+
+        event = self._timer.update(is_correct, now=now)
+        if event == "alert":
+            message = feedback_text or self._last_feedback or "Corrige tu postura"
+            self._voice.say(message)
+            if self._notifier is not None:
+                self._notifier.notify("Corrige tu postura", message)
+        elif event == "praise":
             self._voice.say(self._praise)
-            self._was_bad = False
+        return event
 
     def reset(self):
-        self._was_bad = False
+        self._timer.reset()
+        self._last_feedback = ""

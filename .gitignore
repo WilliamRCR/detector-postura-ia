@@ -1,6 +1,11 @@
 *.pkl
 *.npz
+*.db
+modelo_meta.json
+config.json
+dataset_sessions.json
 __pycache__/
 .env
 venv
+.venv
 .claude

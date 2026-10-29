@@ -1,134 +1,140 @@
+"""Detector de postura en consola (ventana de OpenCV).
+
+Es la version minima: para la experiencia completa (evaluacion de 30s,
+calibracion, historial, modo privacidad) usa app_gui.py o app_web.py.
+
+predict.py era un duplicado casi identico de este archivo y se elimino.
+"""
 import cv2
-import mediapipe as mp
-import numpy as np
-import joblib
 
-from posture_metrics import CONTEXT_LABELS, SessionStats, detect_context, evaluate_posture
-from smoothing import MajorityVoteSmoother
-from voice_feedback import VoiceFeedback, PostureVoiceCoach
+import core
+from config import AppConfig
+from history import SessionHistory
+from posture_metrics import CONTEXT_LABELS, SessionStats, detect_context
+from voice_feedback import BreakReminder, DesktopNotifier, PostureVoiceCoach, VoiceFeedback
 
-mp_drawing = mp.solutions.drawing_utils
-mp_pose = mp.solutions.pose
 
-# Cargar modelo IA
-try:
-    model = joblib.load("modelo_postura.pkl")
-    scaler = joblib.load("scaler.pkl")
-except FileNotFoundError:
-    print("Error: Modelo no encontrado.")
-    exit()
+def main():
+    cfg = AppConfig.load()
 
-pose = mp_pose.Pose(
-    static_image_mode=False,
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5
-)
+    try:
+        predictor = core.PosturePredictor.load(thresholds=cfg.thresholds())
+    except core.ModelError as exc:
+        print(f"Error: {exc}")
+        return
 
-def get_keypoints(landmarks):
-    keypoints = []
+    import mediapipe as mp
 
-    for lm in landmarks:
-        keypoints.extend([lm.x, lm.y, lm.z])
+    mp_drawing = mp.solutions.drawing_utils
+    mp_pose = mp.solutions.pose
+    pose = core.new_pose()
 
-    return np.array(keypoints)
+    voice = VoiceFeedback(enabled=cfg.voice_enabled, rate=cfg.voice_rate, cooldown=cfg.voice_cooldown)
+    notifier = DesktopNotifier(enabled=cfg.desktop_notifications)
+    coach = PostureVoiceCoach(
+        voice,
+        min_bad_seconds=cfg.alert_after_seconds,
+        repeat_seconds=cfg.alert_repeat_seconds,
+        notifier=notifier,
+    )
+    breaks = BreakReminder(interval_minutes=cfg.break_minutes, enabled=cfg.break_reminders)
+    session = SessionStats()
+    session.start()
+    breaks.start()
+    history = SessionHistory() if cfg.save_history else None
 
-status_smoother = MajorityVoteSmoother(window=7)
-feedback_smoother = MajorityVoteSmoother(window=5)
-voice = VoiceFeedback()
-coach = PostureVoiceCoach(voice)
-session = SessionStats()
-session.start()
+    print("=== DETECTOR DE POSTURA IA ===")
+    print(f"Avisos tras {cfg.alert_after_seconds:.0f}s de mala postura sostenida.")
+    print("Presiona 'q' para salir, 'p' para el modo privacidad.")
 
-print("=== DETECTOR DE POSTURA IA ===")
-print("Presiona 'q' para salir")
+    cap = cv2.VideoCapture(cfg.camera_index)
+    if not cap.isOpened():
+        print(f"Error: no se pudo abrir la camara {cfg.camera_index}.")
+        voice.stop()
+        return
 
-cap = cv2.VideoCapture(0)
+    privacy = cfg.privacy_mode
 
-while cap.isOpened():
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
 
-    ret, frame = cap.read()
+        if cfg.flip_camera:
+            frame = cv2.flip(frame, 1)
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = pose.process(rgb)
 
-    if not ret:
-        break
+        status = "Sin detectar"
+        feedback = ""
+        color = (100, 100, 100)
+        context_text = ""
 
-    frame = cv2.flip(frame, 1)
+        if privacy:
+            # Modo privacidad: se descarta el video y solo queda el esqueleto
+            # sobre fondo negro.
+            frame = frame * 0
 
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        if results.pose_landmarks:
+            landmarks = results.pose_landmarks.landmark
+            is_correct, feedback = predictor.predict(landmarks)
+            context_text = CONTEXT_LABELS[detect_context(landmarks)]
+            session.record(is_correct, feedback)
 
-    results = pose.process(rgb)
+            if is_correct is None:
+                status = "Ponte de frente"
+            elif is_correct:
+                status = "CORRECTA"
+                color = (0, 255, 0)
+            else:
+                status = "INCORRECTA"
+                color = (0, 0, 255)
 
-    status = "Sin detectar"
-    feedback = ""
-    color = (100, 100, 100)
-    context_text = ""
-
-    if results.pose_landmarks:
-
-        landmarks = results.pose_landmarks.landmark
-
-        # IA
-        kp = get_keypoints(landmarks)
-        kp_scaled = scaler.transform([kp])
-
-        pred = model.predict(kp_scaled)[0]
-
-        is_correct = status_smoother.update(pred) == 1
-        feedback = feedback_smoother.update(evaluate_posture(landmarks))
-        context_text = CONTEXT_LABELS[detect_context(landmarks)]
-        session.record(is_correct)
-
-        if is_correct:
-            status = "CORRECTA"
-            color = (0, 255, 0)
+            coach.update(is_correct, feedback)
+            mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
         else:
-            status = "INCORRECTA"
-            color = (0, 0, 255)
+            predictor.reset()
+            coach.reset()
 
-        coach.update(is_correct, feedback)
+        if breaks.due():
+            mensaje = breaks.message()
+            voice.say_now(mensaje)
+            notifier.notify("Hora de una pausa", mensaje, force=True)
+            print(f"[pausa] {mensaje}")
 
-        # Dibujar esqueleto
-        mp_drawing.draw_landmarks(
-            frame,
-            results.pose_landmarks,
-            mp_pose.POSE_CONNECTIONS
-        )
-    else:
-        status_smoother.reset()
-        feedback_smoother.reset()
+        h, w, _ = frame.shape
+        cv2.rectangle(frame, (0, 0), (w, 90), color, -1)
+        cv2.putText(frame, f"Postura: {status}", (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        cv2.putText(frame, feedback, (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
-    h, w, _ = frame.shape
+        pie = [context_text, session.summary_text()]
+        if privacy:
+            pie.append("Privacidad ON")
+        info_line = "  |  ".join(filter(None, pie))
+        if info_line:
+            cv2.putText(frame, info_line, (20, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
 
-    cv2.rectangle(frame, (0, 0), (w, 90), color, -1)
+        cv2.imshow("Detector de Postura IA", frame)
 
-    cv2.putText(
-        frame,
-        f"Postura: {status}",
-        (20, 35),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        1,
-        (255, 255, 255),
-        2
-    )
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
+            break
+        if key == ord('p'):
+            privacy = not privacy
+            print(f"Modo privacidad: {'ON' if privacy else 'OFF'}")
 
-    cv2.putText(
-        frame,
-        feedback,
-        (20, 70),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.8,
-        (255, 255, 255),
-        2
-    )
+    cap.release()
+    cv2.destroyAllWindows()
 
-    info_line = "  |  ".join(filter(None, [context_text, session.summary_text()]))
-    if info_line:
-        cv2.putText(frame, info_line, (20, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+    if history is not None:
+        saved = history.save_stats(session)
+        if saved:
+            print(
+                f"Sesion guardada en el historial: {session.elapsed_minutes:.1f} min, "
+                f"{session.percent_correct:.0f}% correcta."
+            )
+    voice.stop()
 
-    cv2.imshow("Detector de Postura IA", frame)
 
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
-
-cap.release()
-cv2.destroyAllWindows()
-voice.stop()
+if __name__ == "__main__":
+    main()
