@@ -76,6 +76,18 @@ pip install -r requirements.txt
 
 El flujo completo es: **recolectar datos → entrenar → usar el detector**.
 
+### Atajo: los tres accesos directos
+
+En la carpeta del proyecto hay tres archivos `.bat`. **Doble clic, en orden**, y no hace falta tocar la terminal:
+
+| Archivo | Qué hace |
+|---|---|
+| `1-GRABAR-DATOS.bat` | Te guía por las 4 grabaciones de 20 segundos |
+| `2-ENTRENAR.bat` | Entrena el modelo con lo que grabaste |
+| `3-ABRIR-APP.bat` | Abre la app de escritorio |
+
+Usan el Python del entorno virtual y se ubican solos en la carpeta correcta, así que funcionan aunque Python no esté en el PATH. Abajo está el detalle de cada paso y qué deberías ver.
+
 ### 1. Recolectar datos (desde la webcam, de frente)
 
 ```bash
@@ -348,6 +360,9 @@ python train.py
 
 ```
 detector-postura-ia/
+├── 1-GRABAR-DATOS.bat      # Atajo: graba las 4 sesiones de entrenamiento
+├── 2-ENTRENAR.bat          # Atajo: entrena el modelo
+├── 3-ABRIR-APP.bat         # Atajo: abre la app de escritorio
 ├── core.py                 # Keypoints, características normalizadas, carga del modelo y predicción
 ├── config.py               # Configuración en config.json, con límites y valores por defecto
 ├── history.py              # Historial de sesiones en SQLite
