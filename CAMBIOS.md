@@ -21,7 +21,7 @@ Para correr los tests no hace falta cámara ni modelo entrenado:
 python -m unittest discover -s tests -t .
 ```
 
-Deben pasar los 105.
+Deben pasar los 116.
 
 ---
 
@@ -141,9 +141,19 @@ Ahora el video se ajusta **midiendo la interfaz ya construida** en vez de estima
 
 ---
 
+## Revisión posterior: errores corregidos
+
+- **La voz solo hablaba la bienvenida.** `pyttsx3` en Windows solo suena la primera vez si se reutiliza el mismo motor: el segundo `runAndWait()` vuelve al instante sin hablar (medido: 3,4 s la primera frase, 0,3 s las siguientes). Ahora `VoiceFeedback` crea un motor nuevo por frase dentro de su hilo (con COM inicializado). Además: un error suelto ya no mata el hilo para siempre, la voz se puede activar aunque la app haya arrancado con ella apagada, un aviso descartado por cola llena ya no gasta el cooldown, y `stop()` ya no se cuelga con la cola llena.
+- **El aviso podía decir "Buena postura".** Si la red decía "incorrecta" pero las reglas por umbral decían "Buena postura", esa era la frase que se hablaba como corrección. Ahora se usa la última corrección real o un aviso genérico.
+- **La sesión se guardaba dos veces** (DETENER y luego cerrar la app). `SessionStats.reset()` tras guardar.
+- **Los `.bat` buscaban solo `.venv`** y aquí el entorno se llama `venv`. Ahora prueban ambos y, si no hay ninguno, explican qué hacer.
+- **`train.py`**: con las 4 sesiones de `1-GRABAR-DATOS.bat`, la prueba era una sola sesión (una sola clase). Ahora cada clase aporta al menos un grupo completo a la prueba.
+- **Ajustes**: la rueda del ratón dejaba de funcionar al pasar sobre los controles; y cambiar la cámara avisa de que se aplica al reiniciar.
+- Textos con tilde que OpenCV dibujaba como `?` (ventana de `main.py` y de grabación).
+
 ## Tests
 
-**105 tests, ninguno necesita cámara ni modelo entrenado.** Usan poses falsas de MediaPipe (`tests/fake_pose.py`) para ejercitar el código real.
+**116 tests (105 + 11 de esta revisión), ninguno necesita cámara ni modelo entrenado.** Usan poses falsas de MediaPipe (`tests/fake_pose.py`) para ejercitar el código real.
 
 | Archivo | Cubre |
 |---|---|

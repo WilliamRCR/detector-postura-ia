@@ -139,7 +139,7 @@ def main():
         elapsed_total = now - program_start
 
         if elapsed_total < COUNTDOWN:
-            texto = f"Prepárate...  {COUNTDOWN - int(elapsed_total)}"
+            texto = f"Preparate...  {COUNTDOWN - int(elapsed_total)}"  # sin tilde: OpenCV la dibuja como '?'
             color = (0, 165, 255)
         else:
             if start_time is None:

@@ -5,6 +5,8 @@ calibracion, historial, modo privacidad) usa app_gui.py o app_web.py.
 
 predict.py era un duplicado casi identico de este archivo y se elimino.
 """
+import unicodedata
+
 import cv2
 
 import core
@@ -12,6 +14,13 @@ from config import AppConfig
 from history import SessionHistory
 from posture_metrics import CONTEXT_LABELS, SessionStats, detect_context
 from voice_feedback import BreakReminder, DesktopNotifier, PostureVoiceCoach, VoiceFeedback
+
+
+def _ascii(text):
+    """Las fuentes de OpenCV no dibujan tildes ni la n con tilde (salen como
+    '?'), asi que el texto de la ventana se pasa a ASCII."""
+    plano = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in plano if not unicodedata.combining(c))
 
 
 def main():
@@ -105,14 +114,14 @@ def main():
         h, w, _ = frame.shape
         cv2.rectangle(frame, (0, 0), (w, 90), color, -1)
         cv2.putText(frame, f"Postura: {status}", (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        cv2.putText(frame, feedback, (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        cv2.putText(frame, _ascii(feedback), (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
         pie = [context_text, session.summary_text()]
         if privacy:
             pie.append("Privacidad ON")
         info_line = "  |  ".join(filter(None, pie))
         if info_line:
-            cv2.putText(frame, info_line, (20, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+            cv2.putText(frame, _ascii(info_line), (20, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
 
         cv2.imshow("Detector de Postura IA", frame)
 

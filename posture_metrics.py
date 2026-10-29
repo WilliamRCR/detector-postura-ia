@@ -232,6 +232,12 @@ class SessionStats:
         self._incorrect = 0
         self._issues = {}
 
+    def reset(self):
+        """Deja la sesion vacia: ya guardada en el historial, no debe volver
+        a guardarse (DETENER y luego cerrar la app duplicaba la fila)."""
+        self.start()
+        self._start_time = None
+
     def record(self, is_correct, feedback_text=None):
         if is_correct is None:
             return

@@ -101,9 +101,30 @@ def split_by_group(X, y, groups, test_size=0.25):
             np.arange(len(X)), test_size=test_size, random_state=RANDOM_STATE, stratify=stratify
         )
 
+    # Un GroupShuffleSplit a secas puede dejar en la prueba grupos de una sola
+    # clase (con las 4 sesiones de 1-GRABAR-DATOS.bat, la prueba era UNA sesion)
+    # y la precision de prueba no significaba nada. Se reparte por clase: cada
+    # una aporta al menos un grupo completo a la prueba.
+    rng = np.random.default_rng(RANDOM_STATE)
+    groups_by_class = {}
+    for group in unique_groups:
+        label = int(np.bincount(y[groups == group]).argmax())
+        groups_by_class.setdefault(label, []).append(group)
+
+    if all(len(members) >= 2 for members in groups_by_class.values()):
+        test_groups = []
+        for members in groups_by_class.values():
+            n_test = min(len(members) - 1, max(1, round(test_size * len(members))))
+            test_groups.extend(rng.choice(members, size=n_test, replace=False))
+        in_test = np.isin(groups, test_groups)
+        return np.flatnonzero(~in_test), np.flatnonzero(in_test)
+
+    print(
+        "ADVERTENCIA: alguna clase tiene una sola sesion/foto. Divido sin garantizar\n"
+        "            que la prueba tenga las dos clases; graba mas sesiones."
+    )
     splitter = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=RANDOM_STATE)
-    train_idx, test_idx = next(splitter.split(X, y, groups=groups))
-    return train_idx, test_idx
+    return next(splitter.split(X, y, groups=groups))
 
 
 def describe(name, y):

@@ -99,6 +99,7 @@ def _save_session():
     if not cfg.save_history or session.samples == 0:
         return
     history.save_stats(session)
+    session.reset()
 
 
 def capture_loop():

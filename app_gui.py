@@ -449,11 +449,16 @@ class PostureApp:
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         def rueda(event):
-            canvas.yview_scroll(-event.delta // 120, "units")
+            # Solo si el puntero esta sobre esta pestana. No se usa <Leave> del
+            # canvas: Tk lo dispara al entrar a cualquier control hijo, y como
+            # los hijos cubren todo el canvas la rueda dejaba de funcionar.
+            sobre = self.root.winfo_containing(event.x_root, event.y_root)
+            while sobre is not None and sobre is not parent:
+                sobre = sobre.master
+            if sobre is parent:
+                canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
 
-        # Solo se escucha la rueda mientras el puntero esta sobre esta pestana.
-        canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", rueda))
-        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+        canvas.bind_all("<MouseWheel>", rueda, add="+")
         return inner
 
     def _build_settings_tab(self):
@@ -549,10 +554,15 @@ class PostureApp:
         if any(self.cfg[key] != values.get(key, self.cfg[key]) for key in
                ("shoulder_tilt_max", "forward_head_max", "neck_compression_min")):
             values["calibrated"] = False
+        camara_cambio = int(values.get("camera_index", self.cfg.camera_index)) != self.cfg.camera_index
         self.cfg.update(values)
         self._apply_config()
         self._refresh_settings_fields()
-        self.settings_msg.set("Guardado en config.json.")
+        self.settings_msg.set(
+            "Guardado. El cambio de cámara se aplica al reiniciar la app."
+            if camara_cambio
+            else "Guardado en config.json."
+        )
         self.root.after(4000, lambda: self.settings_msg.set(""))
 
     def _reset_settings(self):
@@ -693,7 +703,9 @@ class PostureApp:
     def _save_session(self):
         if self.history is None or self.session.samples == 0:
             return
-        if self.history.save_stats(self.session):
+        saved = self.history.save_stats(self.session)
+        self.session.reset()
+        if saved:
             self._refresh_history()
 
     # ------------------------------------------------------------------
