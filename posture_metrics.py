@@ -47,8 +47,8 @@ DEFAULT_THRESHOLDS = PostureThresholds()
 
 
 def compute_metrics(landmarks):
-    """Devuelve las razones normalizadas, o None si no se puede medir con
-    confianza (p. ej. la persona esta de lado y el ancho de hombros colapsa)."""
+    """Devuelve las razones normalizadas de la vista detectada, o None si no se
+    puede medir con confianza (a 45 grados, muy lejos o deteccion mala)."""
     return core.metrics_from_keypoints(core.keypoints_from_landmarks(landmarks))
 
 
@@ -128,9 +128,11 @@ def summarize_aspects(aspect_percents, good_threshold=70.0):
 
 
 # ------------------------------------------------------- calibracion personal
-# Cuanto se puede alejar un umbral calibrado del valor por defecto. Sin estos
-# topes, una persona que se evalua encorvada terminaria con umbrales que
-# aprueban su mala postura para siempre.
+# Cuanto se puede alejar un umbral calibrado de su referencia (los umbrales de
+# train.py o, si no hay, los generales). La referencia es fija: si se tomara el
+# umbral actual, cada evaluacion podria moverlo otro 1.6x y los topes no
+# limitarian nada. Sin topes, una persona que se evalua encorvada terminaria con
+# umbrales que aprueban su mala postura para siempre.
 CALIBRATION_BOUNDS = {
     "shoulder_tilt_max": (0.7, 1.6),
     "forward_head_max": (0.7, 1.6),
@@ -209,10 +211,12 @@ class PostureCalibrator:
     def samples(self):
         return self._count(self.view)
 
-    def suggest(self, base=None, percent_correct=100.0):
+    def suggest(self, base=None, percent_correct=100.0, anchor=None):
         """Devuelve (umbrales, motivo). Si no hay datos suficientes o la postura
-        de referencia era mala, devuelve los umbrales base sin tocar."""
+        de referencia era mala, devuelve los umbrales base sin tocar. `anchor`
+        es la referencia fija de los topes (por defecto, los umbrales generales)."""
         base = base or DEFAULT_THRESHOLDS
+        anchor = anchor or DEFAULT_THRESHOLDS
 
         if self.samples < CALIBRATION_MIN_SAMPLES:
             return base, f"Pocas muestras ({self.samples}) para calibrar; dejo los umbrales generales."
@@ -222,9 +226,10 @@ class PostureCalibrator:
                 "postura y vuelve a evaluarte."
             )
 
-        def clamp(value, default, key):
+        def clamp(value, key):
             low, high = CALIBRATION_BOUNDS[key]
-            return max(default * low, min(default * high, value))
+            reference = getattr(anchor, key)
+            return max(reference * low, min(reference * high, value))
 
         data = self._samples[self.view]
 
@@ -235,9 +240,9 @@ class PostureCalibrator:
             suggested = replace(
                 base,
                 # Margen aditivo: de perfil estas medidas pueden ser ~0 o negativas.
-                side_head_forward_max=clamp(head + 0.15, base.side_head_forward_max, "side_head_forward_max"),
-                side_neck_height_min=clamp(gap * 0.90, base.side_neck_height_min, "side_neck_height_min"),
-                side_trunk_lean_max=clamp(lean + 3.0, base.side_trunk_lean_max, "side_trunk_lean_max"),
+                side_head_forward_max=clamp(head + 0.15, "side_head_forward_max"),
+                side_neck_height_min=clamp(gap * 0.90, "side_neck_height_min"),
+                side_trunk_lean_max=clamp(lean + 3.0, "side_trunk_lean_max"),
             )
             return suggested, f"Umbrales de perfil ajustados a tu cuerpo y tu cámara ({self.samples} muestras)."
 
@@ -249,9 +254,9 @@ class PostureCalibrator:
         gap = _percentile(data["neck_gap"], 25)
         suggested = replace(
             base,
-            shoulder_tilt_max=clamp(tilt * 1.15, base.shoulder_tilt_max, "shoulder_tilt_max"),
-            forward_head_max=clamp(head * 1.15, base.forward_head_max, "forward_head_max"),
-            neck_compression_min=clamp(gap * 0.90, base.neck_compression_min, "neck_compression_min"),
+            shoulder_tilt_max=clamp(tilt * 1.15, "shoulder_tilt_max"),
+            forward_head_max=clamp(head * 1.15, "forward_head_max"),
+            neck_compression_min=clamp(gap * 0.90, "neck_compression_min"),
         )
         return suggested, f"Umbrales ajustados a tu cuerpo y tu cámara ({self.samples} muestras)."
 

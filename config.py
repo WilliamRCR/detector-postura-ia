@@ -5,9 +5,11 @@ El archivo se crea solo la primera vez que se guarda. Si falta, o si tiene
 claves raras, se usan los valores por defecto sin romper la app.
 """
 import json
+import math
 from pathlib import Path
 
 CONFIG_FILE = "config.json"
+ANCHOR_KEY = "threshold_anchor"
 
 DEFAULTS = {
     # Camara
@@ -26,6 +28,9 @@ DEFAULTS = {
     "side_neck_height_min": 1.70,    # altura de la cabeza sobre el hombro, en tamanos de cabeza
     "side_trunk_lean_max": 12.0,     # grados que el hombro queda por delante de la cadera
     "calibrated": False,
+    # Umbrales que dejo train.py con tus grabaciones. La calibracion de 30s solo
+    # se puede mover alrededor de estos valores; sin ellos, de los generales.
+    ANCHOR_KEY: None,
     # Avisos
     "alert_after_seconds": 6.0,
     "alert_repeat_seconds": 25.0,
@@ -68,8 +73,19 @@ THRESHOLD_KEYS = (
 )
 
 
+def _coerce_anchor(value):
+    """Solo acepta un dict con umbrales conocidos, cada uno dentro de sus limites."""
+    if not isinstance(value, dict):
+        return None
+    anchor = {key: _coerce(key, value[key]) for key in THRESHOLD_KEYS if key in value}
+    return anchor or None
+
+
 def _coerce(key, value):
     """Convierte el valor al tipo del default y lo deja dentro de los limites."""
+    if key == ANCHOR_KEY:
+        return _coerce_anchor(value)
+
     default = DEFAULTS[key]
     try:
         if isinstance(default, bool):
@@ -80,7 +96,10 @@ def _coerce(key, value):
             value = int(round(float(value)))
         elif isinstance(default, float):
             value = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+    if isinstance(value, float) and not math.isfinite(value):
         return default
 
     low, high = LIMITS.get(key, (None, None))
@@ -131,6 +150,10 @@ class AppConfig:
         for key, value in (values or {}).items():
             if key not in DEFAULTS:
                 continue
+            # Un campo vacio llega como None: no cambia nada (el umbral guardado
+            # no debe volver al valor por defecto por dejar una casilla en blanco).
+            if value is None and key != ANCHOR_KEY:
+                continue
             new_value = _coerce(key, value)
             if self._values.get(key) != new_value:
                 self._values[key] = new_value
@@ -142,8 +165,25 @@ class AppConfig:
     def as_dict(self):
         return dict(self._values)
 
+    def would_change(self, key, value):
+        """True si guardar `value` cambiaria de verdad lo que hay en `key`."""
+        if key not in DEFAULTS or value is None:
+            return False
+        return _coerce(key, value) != self._values[key]
+
+    def thresholds_changed(self, values):
+        return any(self.would_change(key, values.get(key)) for key in THRESHOLD_KEYS)
+
     def reset(self, save=True):
+        """Vuelve a los valores por defecto. Los umbrales de train.py se conservan:
+        con los generales, en una webcam de portatil, la regla de cabeza adelantada
+        marcaba mal todas las posturas buenas."""
+        anchor = self._values[ANCHOR_KEY]
         self._values = dict(DEFAULTS)
+        if anchor:
+            self._values.update(anchor)
+            self._values[ANCHOR_KEY] = anchor
+            self._values["calibrated"] = True
         if save:
             self.save()
 
@@ -152,28 +192,23 @@ class AppConfig:
         """Devuelve los umbrales como PostureThresholds."""
         from posture_metrics import PostureThresholds  # noqa: PLC0415  (evita ciclo)
 
-        return PostureThresholds(
-            shoulder_tilt_max=self._values["shoulder_tilt_max"],
-            forward_head_max=self._values["forward_head_max"],
-            neck_compression_min=self._values["neck_compression_min"],
-            side_head_forward_max=self._values["side_head_forward_max"],
-            side_neck_height_min=self._values["side_neck_height_min"],
-            side_trunk_lean_max=self._values["side_trunk_lean_max"],
-        )
+        return PostureThresholds(**{key: self._values[key] for key in THRESHOLD_KEYS})
 
-    def set_thresholds(self, thresholds, calibrated=True, save=True):
-        self.update(
-            {
-                "shoulder_tilt_max": thresholds.shoulder_tilt_max,
-                "forward_head_max": thresholds.forward_head_max,
-                "neck_compression_min": thresholds.neck_compression_min,
-                "side_head_forward_max": thresholds.side_head_forward_max,
-                "side_neck_height_min": thresholds.side_neck_height_min,
-                "side_trunk_lean_max": thresholds.side_trunk_lean_max,
-                "calibrated": calibrated,
-            },
-            save=save,
-        )
+    def anchor_thresholds(self):
+        """Los umbrales de referencia de la calibracion: los de train.py o, si
+        todavia no hay, los generales."""
+        from posture_metrics import PostureThresholds  # noqa: PLC0415  (evita ciclo)
+
+        anchor = self._values[ANCHOR_KEY] or {}
+        return PostureThresholds(**{key: anchor.get(key, DEFAULTS[key]) for key in THRESHOLD_KEYS})
+
+    def set_thresholds(self, thresholds, calibrated=True, save=True, anchor=False):
+        """Guarda los umbrales. Con anchor=True quedan ademas como referencia de
+        la calibracion en vivo (lo hace train.py, que parte de datos etiquetados)."""
+        values = {key: getattr(thresholds, key) for key in THRESHOLD_KEYS}
+        if anchor:
+            values[ANCHOR_KEY] = dict(values)
+        self.update({**values, "calibrated": calibrated}, save=save)
 
     # ------------------------------------------------------------------
     def __getattr__(self, name):

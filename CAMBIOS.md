@@ -1,6 +1,6 @@
 # Cambios de esta rama
 
-Implementa las 14 ideas del cuadro del PDF *"Detector de Postura IA — Ideas de mejora"* (Oct 2026), que está incluido en el repo.
+Implementa las 14 ideas del cuadro del PDF *"Detector de Postura IA — Ideas de mejora"* (Oct 2026). El PDF se quitó del repo después; sigue en el historial de git.
 
 **Resumen:** 4 arreglos del modelo (prioridad alta), 7 funciones nuevas, 3 de limpieza. Más 105 tests que no existían, un bug de layout que apareció al probar, y una corrección a lo que decía el PDF.
 
@@ -21,7 +21,7 @@ Para correr los tests no hace falta cámara ni modelo entrenado:
 python -m unittest discover -s tests -t .
 ```
 
-Deben pasar los 159.
+Deben pasar los 302.
 
 ---
 
@@ -183,17 +183,58 @@ Lo medido con las 23 grabaciones de webcam y las 428 fotos antiguas:
 - Los umbrales de la vista de perfil se validaron solo con las fotos antiguas (reglas: marcan mal el 95% de las incorrectas y el 17% de las correctas). Falta confirmarlos con grabaciones propias de perfil.
 - **Lo que falta es de datos, no de código:** grabar las 8 combinaciones, mejor varias veces y en días distintos. El tipo de modelo no es la palanca: red actual, red pequeña, Random Forest y solo 8 características quedan entre 88 y 90% sobre las fotos antiguas.
 
+## Revisión general: errores corregidos
+
+Cada error tiene su test, salvo el orden de los pasos en la web y la instalación, que se comprobaron corriendo la app y `0-INSTALAR.bat`.
+
+| Error | Antes | Ahora |
+|---|---|---|
+| **Evaluación** (`assessment.py`) | Lo que no se podía medir contaba como mala postura: 100 fotogramas a 45° daban "0% correcta" y podían bloquear la calibración | No cuenta a favor ni en contra. Si se midió menos del 70% del tiempo se avisa; si no se midió nada, se muestra SIN DATOS |
+| **Calibración** (`posture_metrics.py`) | El tope se aplicaba sobre el umbral actual y se acumulaba: 0.88 → 1.41 → 2.25 → 3.60 en cuatro evaluaciones, hasta aprobar cualquier postura | El tope se mide desde una referencia fija: los umbrales de `train.py` (`threshold_anchor`) o los generales |
+| **Modelo final** (`train.py`) | Se guardaba sin las sesiones de prueba; con una pasada de grabación, 2 de las 8 combinaciones nunca se aprendían | Se vuelve a entrenar con todas las sesiones. La precisión reportada sigue siendo la de sesiones no vistas |
+| **Cobertura** (`train.py`) | 1 sesión correcta + 1 incorrecta contaban como 2 sesiones y no había aviso | Se cuentan por clase |
+| **Cabeza adelantada** (`core.py`) | Se medía contra el hombro izquierdo: la misma pose daba -0.17 o +0.17 según hacia dónde girara el torso | Se mide contra el centro de los hombros |
+| **Ángulos de línea** (`core.py`) | Una línea horizontal podía medir 180° | Siempre de 0 a 90° |
+| **Avisos** (`smoothing.py`) | El tiempo sin poder medir contaba como mala postura sostenida | Tras 15 s sin medir, el episodio se cierra |
+| **Parpadeo** (`core.py`) | Encontrado al correr la app real: cerca del límite entre vistas, el estado saltaba entre CORRECTA y "Ubícate" | Se conserva el último estado durante 8 fotogramas seguidos sin medir |
+| **Web** (`app_web.py`, `index.html`) | Guardar cualquier ajuste apagaba `calibrated` y avisaba de un cambio de cámara; un campo vacío volvía al valor por defecto | Solo cuentan los cambios reales; un campo vacío no cambia nada y la página muestra lo guardado |
+| **Web** (`app_web.py`) | Al iniciar, un fotograma podía caer en coaching antes de empezar; al detener, podía anotarse uno en la sesión ya guardada | Se corrigió el orden de los pasos |
+| **Notificaciones** (`voice_feedback.py`) | Si arrancaban apagadas no se podían activar, y un error suelto las apagaba hasta reiniciar | Se pueden activar en cualquier momento; se apagan tras 3 errores seguidos |
+| **Configuración** (`config.py`, `app_gui.py`) | Un valor infinito hacía fallar la carga | Se usa el valor por defecto; en Ajustes se rechaza |
+| **Restaurar ajustes** (`config.py`) | Borraba los umbrales de `train.py`, y la regla de cabeza adelantada volvía a marcar mal las posturas buenas | Los conserva |
+| **Instalación** | La guía creaba el entorno con el Python del PATH, que puede ser incompatible | `0-INSTALAR.bat` busca una versión compatible, y el README indica el rango real |
+
+**Hay que volver a entrenar:** `FEATURE_VERSION` pasó a 4. La app lo avisa si encuentra un modelo anterior.
+
+## Reto de la feria
+
+El detalle actualizado de esta etapa está en [doc/CAMBIOS-IMPLEMENTADOS.md](doc/CAMBIOS-IMPLEMENTADOS.md).
+
+La feria la califica el público, así que se agregó PosturIA (`reto.py`): tres juegos, partidas individuales o por turnos, tres entrenadores con voz de IA, sonidos, música, consejos, aprendizaje y ranking del día. No usa la red neuronal y no cambia la app de postura.
+
+- **Voces:** generadas con `edge-tts` y guardadas en `audio/`, así que el juego no necesita internet. La de la abuelita lleva un efecto de temblor.
+- **Sonidos y música:** generados por código en `tools/generar_audio.py`, sin derechos de autor.
+- **Sentadillas:** se miden por cuánto baja la cadera, no por el ángulo de la rodilla, porque de frente ese ángulo casi no cambia.
+
+La estatua pasó de aguantar quieto a imitar poses: se vigilan 9, 13 o 19 de los 33 puntos de MediaPipe según la dificultad, porque con 7 puntos era demasiado fácil aguantar. Las poses se comparan por dirección de brazos y piernas, no por posición, así que sirven para cualquier estatura.
+
+**Falta ajustarlo con personas reales:** los umbrales salen de movimientos simulados. Si cuenta de más o de menos, se cambia con la tecla `D`.
+
 ## Tests
 
-**159 tests (105 + 54 de las revisiones), ninguno necesita cámara ni modelo entrenado.** Usan poses falsas de MediaPipe (`tests/fake_pose.py`) para ejercitar el código real.
+**302 tests (105 + 197 de las revisiones y el reto), ninguno necesita cámara ni modelo entrenado.** Usan poses falsas de MediaPipe (`tests/fake_pose.py`) para ejercitar el código real.
 
 | Archivo | Cubre |
 |---|---|
-| `test_core.py` | Normalización, detección de perfil, espejo, ruido, métricas |
-| `test_alerts.py` | Aviso por tiempo sostenido, pausas, coach de voz |
+| `test_core.py` | Normalización, detección de perfil, espejo, ruido, métricas, estabilidad de la predicción |
+| `test_views.py` | Las dos vistas, sus reglas y calibración, cobertura de las 4 situaciones |
+| `test_alerts.py` | Aviso por tiempo sostenido, pausas, coach de voz, notificaciones |
 | `test_calibration.py` | Calibración y sus salvaguardas, evaluación de 30s |
+| `test_training.py` | Criterio de frente, umbrales personales y `train.py` de punta a punta |
+| `test_voice_and_split.py` | Hilo de voz, textos del coach, división por grupo |
 | `test_history_config.py` | SQLite, estadísticas de sesión, config con sus límites |
-| `test_app_web.py` | Las 8 rutas de Flask, con el test client (sin abrir la cámara) |
+| `test_app_web.py` | Las rutas de Flask, con el test client (sin abrir la cámara) |
+| `test_reto.py` | Sentadillas, estatua, ranking, audio completo y partidas de principio a fin |
 
 Además se verificó a mano, con cámara simulada (sin encender la webcam):
 

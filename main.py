@@ -52,7 +52,7 @@ def main():
     breaks.start()
     history = SessionHistory() if cfg.save_history else None
 
-    print("=== DETECTOR DE POSTURA IA ===")
+    print("=== PosturIA ===")
     print(f"Avisos tras {cfg.alert_after_seconds:.0f}s de mala postura sostenida.")
     print("Presiona 'q' para salir, 'p' para el modo privacidad.")
 
@@ -123,7 +123,7 @@ def main():
         if info_line:
             cv2.putText(frame, _ascii(info_line), (20, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
 
-        cv2.imshow("Detector de Postura IA", frame)
+        cv2.imshow("PosturIA", frame)
 
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):

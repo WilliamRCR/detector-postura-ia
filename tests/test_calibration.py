@@ -1,7 +1,9 @@
 """Tests de la calibracion personal y de la evaluacion inicial."""
 import unittest
 
-from assessment import PostureAssessment
+from dataclasses import replace
+
+from assessment import PostureAssessment, verdict_lines
 from posture_metrics import (
     CALIBRATION_MIN_SAMPLES,
     DEFAULT_THRESHOLDS,
@@ -79,6 +81,28 @@ class TestPostureCalibrator(unittest.TestCase):
             thresholds.neck_compression_min, DEFAULT_THRESHOLDS.neck_compression_min * 1.3 + 1e-9
         )
 
+    def test_evaluarse_varias_veces_no_acumula_el_tope(self):
+        """Cada evaluacion partia del umbral anterior: 0.55 -> 0.88 -> 1.41 ->
+        2.25 -> 3.60, hasta aprobar cualquier postura."""
+        tope = DEFAULT_THRESHOLDS.forward_head_max * 1.6
+        actuales = DEFAULT_THRESHOLDS
+        for _ in range(6):
+            cal = PostureCalibrator()
+            for m in metrics_series(5.0, 5.0, 0.30):
+                cal.record(m)
+            actuales, _ = cal.suggest(base=actuales, percent_correct=95.0)
+            self.assertLessEqual(actuales.forward_head_max, tope + 1e-9)
+
+    def test_los_topes_se_miden_desde_los_umbrales_de_entrenamiento(self):
+        """Una webcam de portatil mide cabeza ~1.2: esos umbrales de train.py no
+        pueden volver a 0.88 por hacer la evaluacion."""
+        ancla = replace(DEFAULT_THRESHOLDS, forward_head_max=1.5)
+        cal = PostureCalibrator()
+        for m in metrics_series(0.02, 1.2, 0.30):
+            cal.record(m)
+        sugeridos, _ = cal.suggest(base=ancla, percent_correct=95.0, anchor=ancla)
+        self.assertAlmostEqual(sugeridos.forward_head_max, 1.2 * 1.15, places=6)
+
     def test_ignora_valores_no_finitos(self):
         cal = PostureCalibrator()
         cal.record({"shoulder_tilt": float("nan"), "forward_head": 0.1, "neck_gap": 0.4})
@@ -98,6 +122,50 @@ class TestPostureAssessment(unittest.TestCase):
         self.assertEqual(result["samples"], 0)
         self.assertFalse(result["good"])
         self.assertIn("No pude verte", result["verdict"])
+
+    def test_lo_que_no_se_pudo_medir_no_es_mala_postura(self):
+        """A 45 grados is_correct es None: antes contaba como incorrecta."""
+        ev = PostureAssessment(duration=60)
+        ev.start()
+        for _ in range(9):
+            ev.record(True, "Buena postura")
+        ev.record(False, "Endereza los hombros")
+        for _ in range(90):
+            ev.record(None, "Ubícate de frente o de perfil a la cámara")
+        result = ev.finish()
+        self.assertEqual(result["samples"], 10)
+        self.assertAlmostEqual(result["percent_correct"], 90.0)
+        self.assertAlmostEqual(result["measured_percent"], 10.0)
+        self.assertEqual(result["dominant_issue"], "Endereza los hombros")
+        self.assertTrue(any("Solo pude medirte" in linea for linea in verdict_lines(result)))
+
+    def test_sin_nada_medible_pide_reubicarse_y_no_da_porcentaje(self):
+        ev = PostureAssessment(duration=60)
+        ev.start()
+        for _ in range(50):
+            ev.record(None, "Ubícate de frente o de perfil a la cámara")
+        result = ev.finish()
+        self.assertEqual(result["samples"], 0)
+        self.assertEqual(verdict_lines(result), [result["verdict"]])
+        self.assertIn("de frente o de perfil", result["verdict"])
+
+    def test_el_resultado_normal_trae_porcentaje_aspectos_y_nota(self):
+        ev = PostureAssessment(duration=60)
+        ev.start()
+        ev.record(True, "", aspects={"hombros": True})
+        lineas = verdict_lines(ev.finish())
+        self.assertEqual(lineas[0], "100% correcta en la evaluación")
+        self.assertIn("Hombros nivelados", lineas[1])
+        self.assertIn("Pocas muestras", lineas[-1])
+
+    def test_finish_respeta_la_referencia_de_entrenamiento(self):
+        ancla = replace(DEFAULT_THRESHOLDS, forward_head_max=1.5)
+        ev = PostureAssessment(duration=60)
+        ev.start()
+        for m in metrics_series(0.02, 1.2, 0.30):
+            ev.record(True, "Buena postura", metrics=m)
+        result = ev.finish(base_thresholds=ancla, anchor_thresholds=ancla)
+        self.assertAlmostEqual(result["thresholds"].forward_head_max, 1.2 * 1.15, places=6)
 
     def test_cuenta_correctas_e_incorrectas(self):
         ev = PostureAssessment(duration=60)

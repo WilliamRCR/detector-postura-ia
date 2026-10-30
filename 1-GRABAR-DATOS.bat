@@ -5,8 +5,7 @@ set "PY=.venv\Scripts\python.exe"
 if not exist "%PY%" set "PY=venv\Scripts\python.exe"
 if not exist "%PY%" (
     echo No encuentro el entorno virtual ^(.venv o venv^).
-    echo Crealo con:  python -m venv .venv
-    echo e instala:   .venv\Scripts\python.exe -m pip install -r requirements.txt
+    echo Abre primero 0-INSTALAR.bat ^(crea el entorno e instala todo^).
     pause
     exit /b 1
 )
@@ -25,7 +24,8 @@ echo DE PERFIL: completamente de lado a la camara ^(no a 45 grados^), con la
 echo            nariz y las orejas visibles. Da igual hacia que lado mires.
 echo.
 echo Mientras mas variedad ^(distancia, luz, ropa, otro dia^), mejor aprende.
-echo Puedes repetir este archivo cuantas veces quieras: las grabaciones se suman.
+echo Conviene hacer DOS pasadas ^(mejor en dias distintos^): las grabaciones se suman
+echo y asi cada situacion queda con mas de una sesion.
 echo.
 pause
 
@@ -80,6 +80,6 @@ pause
 echo.
 echo ===============================================
 echo   LISTO. Ahora abre 2-ENTRENAR.bat
-echo   ^(te dira si falta alguna de las 4 situaciones^)
+echo   ^(te dira si falta alguna situacion o si conviene otra pasada^)
 echo ===============================================
 pause

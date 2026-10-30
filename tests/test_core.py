@@ -151,6 +151,74 @@ class TestMetricas(unittest.TestCase):
         self.assertLess(hundido["neck_gap"], estirado["neck_gap"])
 
 
+    def test_girar_el_torso_no_cambia_la_cabeza_adelantada(self):
+        """Antes se media contra el hombro izquierdo: la misma pose daba -0.17 o
+        +0.17 segun el lado hacia el que girara."""
+        landmarks = fake_pose.make_landmarks(ear_gap=0.12)
+        landmarks[core.SHOULDER_L].z = -0.05
+        landmarks[core.SHOULDER_R].z = 0.05
+        kp = core.keypoints_from_landmarks(landmarks)
+        derecha = core.metrics_from_keypoints(kp)["forward_head"]
+        izquierda = core.metrics_from_keypoints(core.mirror_keypoints(kp))["forward_head"]
+        self.assertAlmostEqual(derecha, 0.0, places=5)
+        self.assertAlmostEqual(derecha, izquierda, places=5)
+
+    def test_los_angulos_de_linea_van_de_0_a_90_en_una_pose_real(self):
+        """En MediaPipe el lado izquierdo queda a la derecha de la imagen; una
+        linea horizontal llegaba a medir 180 grados."""
+        landmarks = fake_pose.make_landmarks(ear_gap=0.12, shoulder_tilt=0.02)
+        for izquierda, derecha in ((core.SHOULDER_L, core.SHOULDER_R), (core.EAR_L, core.EAR_R)):
+            landmarks[izquierda], landmarks[derecha] = landmarks[derecha], landmarks[izquierda]
+        feats = core.features_from_landmarks(landmarks)
+        inicio = core.RAW_SIZE
+        for nombre in ("head_tilt", "shoulder_line_angle"):
+            valor = feats[inicio + core.EXTRA_FEATURE_NAMES.index(nombre)]
+            self.assertLess(valor, 0.2, nombre)
+
+
+class ModeloFijo:
+    def predict(self, X):
+        return np.ones(len(X), dtype=int)
+
+
+class EscaladorNulo:
+    def transform(self, X):
+        return X
+
+
+class TestPrediccionEstable(unittest.TestCase):
+    """Cerca del limite entre vistas, una persona quieta alterna frames medibles
+    y no medibles: el cartel no debe parpadear."""
+
+    def setUp(self):
+        self.predictor = core.PosturePredictor(ModeloFijo(), EscaladorNulo())
+        self.medible = fake_pose.good_posture()
+        self.no_medible = fake_pose.make_landmarks(shoulder_width=0.05)
+
+    def test_un_frame_no_medible_conserva_el_estado(self):
+        self.predictor.predict(self.medible)
+        self.assertEqual(self.predictor.predict(self.no_medible), (True, "Buena postura"))
+
+    def test_alternar_vistas_no_parpadea(self):
+        for _ in range(20):
+            self.assertIs(self.predictor.predict(self.medible)[0], True)
+            self.assertIs(self.predictor.predict(self.no_medible)[0], True)
+
+    def test_si_sigue_sin_poder_medir_pide_reubicarse(self):
+        self.predictor.predict(self.medible)
+        for _ in range(core.UNMEASURED_TOLERANCE):
+            self.assertIs(self.predictor.predict(self.no_medible)[0], True)
+        self.assertEqual(self.predictor.predict(self.no_medible), (None, core.UNMEASURABLE_MESSAGE))
+
+    def test_sin_estado_previo_no_inventa_uno(self):
+        self.assertEqual(self.predictor.predict(self.no_medible), (None, core.UNMEASURABLE_MESSAGE))
+
+    def test_reset_olvida_el_ultimo_estado(self):
+        self.predictor.predict(self.medible)
+        self.predictor.reset()
+        self.assertIsNone(self.predictor.predict(self.no_medible)[0])
+
+
 class TestValidaciones(unittest.TestCase):
     def test_tamano_incorrecto_lanza_error(self):
         with self.assertRaises(ValueError):

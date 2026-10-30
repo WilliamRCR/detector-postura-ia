@@ -8,7 +8,10 @@ terminar se proponen umbrales ajustados a esa persona.
 import time
 from collections import Counter
 
-from posture_metrics import DEFAULT_THRESHOLDS, PostureCalibrator
+from posture_metrics import DEFAULT_THRESHOLDS, PostureCalibrator, summarize_aspects
+
+# Por debajo de esto el veredicto se apoya en muy poco tiempo y se avisa.
+MIN_MEASURED_PERCENT = 70.0
 
 
 class PostureAssessment:
@@ -20,6 +23,7 @@ class PostureAssessment:
         self._done = False
         self._correct = 0
         self._incorrect = 0
+        self._unmeasured = 0
         self._issues = Counter()
         self._contexts = Counter()
         self._aspect_totals = {}
@@ -30,6 +34,7 @@ class PostureAssessment:
         self._done = False
         self._correct = 0
         self._incorrect = 0
+        self._unmeasured = 0
         self._issues = Counter()
         self._contexts = Counter()
         self._aspect_totals = {}
@@ -58,6 +63,11 @@ class PostureAssessment:
     def record(self, is_correct, feedback_text, context=None, aspects=None, metrics=None):
         if not self.active:
             return
+        if is_correct is None:
+            # A 45 grados o muy lejos no se pudo medir: no es buena ni mala
+            # postura, y contarla como mala bajaba el porcentaje sin motivo.
+            self._unmeasured += 1
+            return
         if is_correct:
             self._correct += 1
         else:
@@ -73,14 +83,20 @@ class PostureAssessment:
         if metrics:
             self._calibrator.record(metrics)
 
-    def finish(self, base_thresholds=None):
+    def finish(self, base_thresholds=None, anchor_thresholds=None):
         """Cierra la evaluacion y devuelve el veredicto. Solo debe llamarse una vez."""
         self._done = True
         total = self._correct + self._incorrect
 
         if total == 0:
+            verdict = (
+                "No pude medirte durante la evaluación. Ubícate de frente o de perfil a la cámara e intenta de nuevo."
+                if self._unmeasured
+                else "No pude verte bien durante la evaluación. Ubícate frente a la cámara e intenta de nuevo."
+            )
             return {
                 "samples": 0,
+                "measured_percent": 0.0,
                 "percent_correct": 0.0,
                 "good": False,
                 "dominant_issue": None,
@@ -88,7 +104,7 @@ class PostureAssessment:
                 "aspect_percents": {},
                 "thresholds": None,
                 "calibration_note": "Sin datos para calibrar.",
-                "verdict": "No pude verte bien durante la evaluacion. Ubicate frente a la camara e intenta de nuevo.",
+                "verdict": verdict,
             }
 
         percent_correct = (self._correct / total) * 100
@@ -107,28 +123,29 @@ class PostureAssessment:
 
         # --- Calibracion personal ---
         thresholds = None
-        calibration_note = "Calibracion desactivada."
+        calibration_note = "Calibración desactivada."
         if self._calibrate:
             base = base_thresholds or DEFAULT_THRESHOLDS
             suggested, calibration_note = self._calibrator.suggest(
-                base=base, percent_correct=percent_correct
+                base=base, percent_correct=percent_correct, anchor=anchor_thresholds
             )
             # Solo se devuelve si realmente cambio algo respecto a la base.
             thresholds = suggested if suggested != base else None
 
         if good:
             verdict = (
-                f"Evaluacion completa. Tu postura habitual es buena, estuvo correcta el "
-                f"{percent_correct:.0f} por ciento del tiempo{context_phrase}. El detalle esta en pantalla."
+                f"Evaluación completa. Tu postura habitual es buena, estuvo correcta el "
+                f"{percent_correct:.0f} por ciento del tiempo{context_phrase}. El detalle está en pantalla."
             )
         else:
             verdict = (
-                f"Evaluacion completa. Tu postura necesita mejorar, estuvo correcta el "
-                f"{percent_correct:.0f} por ciento del tiempo{context_phrase}. El detalle esta en pantalla."
+                f"Evaluación completa. Tu postura necesita mejorar, estuvo correcta el "
+                f"{percent_correct:.0f} por ciento del tiempo{context_phrase}. El detalle está en pantalla."
             )
 
         return {
             "samples": total,
+            "measured_percent": total / (total + self._unmeasured) * 100,
             "percent_correct": percent_correct,
             "good": good,
             "dominant_issue": dominant_issue,
@@ -138,3 +155,19 @@ class PostureAssessment:
             "calibration_note": calibration_note,
             "verdict": verdict,
         }
+
+
+def verdict_lines(result):
+    """Las lineas que se muestran en pantalla al terminar la evaluacion."""
+    if not result["samples"]:
+        return [result["verdict"]]
+    lines = [f"{result['percent_correct']:.0f}% correcta en la evaluación"]
+    lines += summarize_aspects(result["aspect_percents"])
+    if result["measured_percent"] < MIN_MEASURED_PERCENT:
+        lines.append(
+            f"Solo pude medirte el {result['measured_percent']:.0f}% del tiempo: "
+            "ubícate de frente o de perfil."
+        )
+    if result.get("calibration_note"):
+        lines.append(result["calibration_note"])
+    return lines

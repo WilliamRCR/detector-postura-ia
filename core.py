@@ -7,6 +7,7 @@ los modulos solo importa de este archivo.
 """
 import json
 import math
+import sys
 import warnings
 from pathlib import Path
 
@@ -30,7 +31,7 @@ RAW_SIZE = NUM_LANDMARKS * 3  # 99 valores crudos (x, y, z por punto)
 
 # Version del formato de caracteristicas. Si cambia, un modelo viejo ya no
 # sirve y hay que volver a entrenar: por eso se guarda junto al .pkl.
-FEATURE_VERSION = 3
+FEATURE_VERSION = 4
 
 # Indices de MediaPipe Pose que usamos por nombre.
 NOSE = 0
@@ -39,8 +40,7 @@ SHOULDER_L, SHOULDER_R = 11, 12
 HIP_L, HIP_R = 23, 24
 
 # Ancho de hombros minimo (en coordenadas normalizadas de MediaPipe) para que
-# valga la pena normalizar: por debajo de esto la persona esta de perfil o la
-# deteccion es basura.
+# valga la pena normalizar de frente: por debajo de esto la deteccion es basura.
 MIN_SHOULDER_WIDTH = 0.03
 
 # Las piernas fuera del encuadre hacen que MediaPipe extrapole puntos lejanos.
@@ -116,15 +116,19 @@ def _angle_between(v1, v2):
 
 
 def _vector_angle_to_horizontal(v):
-    """Inclinacion de un vector respecto a la horizontal, en grados (0 a 90)."""
+    """Inclinacion de un vector respecto a la horizontal, en grados (0 a 90).
+
+    Sin importar hacia donde apunte: el hombro izquierdo de MediaPipe queda a la
+    derecha de la imagen, y sin los abs() una linea horizontal media 180 grados.
+    """
     if abs(v[0]) < 1e-9 and abs(v[1]) < 1e-9:
         return 0.0
-    return abs(math.degrees(math.atan2(v[1], v[0])))
+    return math.degrees(math.atan2(abs(v[1]), abs(v[0])))
 
 
 def body_frame(kp):
     """Mide el cuerpo: devuelve (centro_hombros, ancho_hombros, largo_torso) o
-    None si no se puede medir con confianza (persona de perfil, por ejemplo)."""
+    None si no se puede medir con confianza."""
     pts = _as_points(kp)
     ls, rs = pts[SHOULDER_L], pts[SHOULDER_R]
     lh, rh = pts[HIP_L], pts[HIP_R]
@@ -338,7 +342,9 @@ def metrics_from_keypoints(kp):
     return {
         "view": VIEW_FRONT,
         "shoulder_tilt": abs(ls[1] - rs[1]) / shoulder_width,
-        "forward_head": (ls[2] - nose[2]) / shoulder_width,
+        # Contra el centro de los hombros: con un solo hombro, girar apenas el
+        # torso cambiaba la medida aunque la cabeza no se moviera.
+        "forward_head": (mid_shoulder[2] - nose[2]) / shoulder_width,
         "neck_gap": abs(mid_ear[1] - mid_shoulder[1]) / torso_length,
     }
 
@@ -432,8 +438,8 @@ def features_matrix(raw_samples):
     """Convierte muchas muestras crudas a caracteristicas.
 
     Devuelve (matriz, indices_validos): las muestras que no se pueden medir
-    (perfil, deteccion mala) se descartan, y los indices permiten filtrar las
-    etiquetas y los grupos en paralelo.
+    (3/4, lejos, deteccion mala) se descartan, y los indices permiten filtrar
+    las etiquetas y los grupos en paralelo.
     """
     rows = []
     keep = []
@@ -532,11 +538,18 @@ def load_model():
     return model, scaler, meta
 
 
+# Frames seguidos sin poder medir que se toleran conservando el ultimo estado.
+# Cerca del limite entre perfil e intermedia la vista salta de un frame a otro,
+# aun sin moverse, y el cartel parpadeaba entre CORRECTA y "Ubicate".
+UNMEASURED_TOLERANCE = 8
+
+
 class PosturePredictor:
     """Modelo + scaler + suavizado, en un solo objeto que usan todas las apps.
 
     `predict` devuelve (is_correct, mensaje). is_correct es None cuando la
-    muestra no es medible (persona de perfil o fuera de cuadro).
+    muestra no es medible (a 45 grados, muy lejos o deteccion mala) durante mas
+    de UNMEASURED_TOLERANCE frames seguidos.
     """
 
     def __init__(self, model, scaler, thresholds=None, status_window=7, feedback_window=5):
@@ -547,6 +560,8 @@ class PosturePredictor:
         self.thresholds = thresholds
         self._status = MajorityVoteSmoother(window=status_window)
         self._feedback = MajorityVoteSmoother(window=feedback_window)
+        self._unmeasured = 0
+        self._last = None
 
     @classmethod
     def load(cls, thresholds=None, **kwargs):
@@ -556,6 +571,8 @@ class PosturePredictor:
     def reset(self):
         self._status.reset()
         self._feedback.reset()
+        self._unmeasured = 0
+        self._last = None
 
     def predict_from_keypoints(self, kp):
         feats = features_from_keypoints(kp)
@@ -571,11 +588,61 @@ class PosturePredictor:
         kp = keypoints_from_landmarks(landmarks)
         raw = self.predict_from_keypoints(kp)
         if raw is None:
+            self._unmeasured += 1
+            if self._last is not None and self._unmeasured <= UNMEASURED_TOLERANCE:
+                return self._last
             self.reset()
             return None, UNMEASURABLE_MESSAGE
+        self._unmeasured = 0
         is_correct = self._status.update(raw) == 1
         feedback = self._feedback.update(evaluate_posture(landmarks, self.thresholds))
-        return is_correct, feedback
+        self._last = (is_correct, feedback)
+        return self._last
+
+
+# ------------------------------------------------------------------ camara
+MAX_CAMARAS = 5
+CUADROS_PRUEBA = 10
+CAMBIO_MINIMO = 0.2  # diferencia media entre cuadros de un sensor real, aun quieto
+
+
+def abrir_camara(indice):
+    """En Windows, DirectShow abre en menos de 1 s lo que por defecto tarda 5 s."""
+    import cv2
+
+    if sys.platform == "win32":
+        return cv2.VideoCapture(indice, cv2.CAP_DSHOW)
+    return cv2.VideoCapture(indice)
+
+
+def imagen_viva(cap):
+    """True si la imagen cambia entre cuadros. Las camaras virtuales de programas
+    como OBS o Animaze se abren sin problema, pero entregan una imagen fija."""
+    anterior = None
+    cambios = []
+    for _ in range(CUADROS_PRUEBA):
+        ok, cuadro = cap.read()
+        if not ok:
+            return False
+        gris = np.asarray(cuadro, dtype=np.float32).mean(axis=2)
+        if anterior is not None:
+            cambios.append(np.abs(gris - anterior).mean())
+        anterior = gris
+    return bool(cambios) and float(np.mean(cambios)) >= CAMBIO_MINIMO
+
+
+def buscar_camara(preferida=0):
+    """Indice de la primera camara real, probando primero la preferida. Si no
+    encuentra ninguna, devuelve la preferida para que el error se vea en pantalla."""
+    orden = [preferida] + [i for i in range(MAX_CAMARAS) if i != preferida]
+    for indice in orden:
+        cap = abrir_camara(indice)
+        try:
+            if cap.isOpened() and imagen_viva(cap):
+                return indice
+        finally:
+            cap.release()
+    return preferida
 
 
 def new_pose(static=False):

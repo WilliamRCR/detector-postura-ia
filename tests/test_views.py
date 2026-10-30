@@ -245,6 +245,16 @@ class TestEntrenamientoCuatroSituaciones(unittest.TestCase):
                                           np.array(["sentado"] * 2 * n), groups)
         self.assertTrue(any("sentado de frente" in f and "una sola sesion" in f for f in faltan))
 
+    def test_una_sesion_por_clase_tambien_se_avisa(self):
+        """Una pasada de 1-GRABAR-DATOS.bat: 2 sesiones por situacion, pero solo
+        una de cada clase, y antes eso contaba como suficiente."""
+        n = train.MIN_PER_CELL
+        y = np.array([1] * n + [0] * n)
+        groups = np.array(["correcta"] * n + ["incorrecta"] * n)
+        with redirect_stdout(StringIO()):
+            faltan = train.print_coverage(y, np.array(["frente"] * 2 * n), np.array(["sentado"] * 2 * n), groups)
+        self.assertTrue(any("sentado de frente" in f and "por clase" in f for f in faltan))
+
     def test_las_cuatro_situaciones_completas_no_avisan(self):
         n = train.MIN_PER_CELL
         y, views, contexts, groups = [], [], [], []

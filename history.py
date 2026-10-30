@@ -173,13 +173,14 @@ class SessionHistory:
 
         problema = None
         try:
-            start = (today or date.today()) - timedelta(days=days - 1)
+            end = today or date.today()
+            start = end - timedelta(days=days - 1)
             with self._connect() as conn:
                 row = conn.execute(
                     "SELECT problema_comun, COUNT(*) AS n FROM sesiones"
-                    " WHERE fecha >= ? AND problema_comun IS NOT NULL"
+                    " WHERE fecha >= ? AND fecha <= ? AND problema_comun IS NOT NULL"
                     " GROUP BY problema_comun ORDER BY n DESC LIMIT 1",
-                    (start.isoformat(),),
+                    (start.isoformat(), end.isoformat()),
                 ).fetchone()
                 if row:
                     problema = row["problema_comun"]
