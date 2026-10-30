@@ -5,8 +5,7 @@ set "PY=.venv\Scripts\python.exe"
 if not exist "%PY%" set "PY=venv\Scripts\python.exe"
 if not exist "%PY%" (
     echo No encuentro el entorno virtual ^(.venv o venv^).
-    echo Crealo con:  python -m venv .venv
-    echo e instala:   .venv\Scripts\python.exe -m pip install -r requirements.txt
+    echo Abre primero 0-INSTALAR.bat ^(crea el entorno e instala todo^).
     pause
     exit /b 1
 )
