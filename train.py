@@ -1,5 +1,9 @@
 """Entrena la red neuronal sobre el dataset recolectado.
 
+El detector se usa en cuatro situaciones: sentado de frente, sentado de perfil,
+de pie de frente y de pie de perfil. Este script reporta cuales cubre tu
+dataset y cuales faltan, y mide la precision de cada vista por separado.
+
 Dos cosas que antes inflaban la precision y ya no:
 
 1. La division entrenamiento/prueba se hace por grupo (foto original o sesion
@@ -15,6 +19,7 @@ Ademas se reporta matriz de confusion y precision/recall por clase, no solo
 accuracy, que con clases desbalanceadas dice poco.
 """
 import argparse
+from collections import Counter
 
 import numpy as np
 from sklearn.metrics import classification_report, confusion_matrix
@@ -23,17 +28,25 @@ from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler
 
 import core
+from config import AppConfig
+from posture_metrics import personal_thresholds
 
-AUGMENT_JITTER_STD = 0.01
+AUGMENT_JITTER_REL = 0.03  # ruido = 3% del tamano de la muestra (hombros o cabeza)
 RANDOM_STATE = 42
+
+CONTEXTS = ("sentado", "de_pie")
+UNKNOWN_CONTEXT = core.UNKNOWN_CONTEXT
+# Cuantas muestras por combinacion y clase se consideran un minimo razonable.
+MIN_PER_CELL = 20
 
 
 def load_dataset(path=core.DATASET_FILE):
-    """Carga X crudo (99 valores), y y los grupos.
+    """Carga X crudo (99 valores), y, grupos, vistas y contextos.
 
     Si el .npz es de una version anterior y no trae grupos, cada muestra queda
     en su propio grupo y se avisa: en ese caso la division vuelve a ser por
-    muestra y la precision puede salir inflada.
+    muestra y la precision puede salir inflada. Si no trae vistas se calculan; si
+    no trae contextos se leen del nombre de la sesion (o quedan "desconocido").
     """
     try:
         data = np.load(path, allow_pickle=False)
@@ -60,7 +73,18 @@ def load_dataset(path=core.DATASET_FILE):
     if not (len(X) == len(y) == len(groups)):
         raise SystemExit("Error: X, y y groups tienen tamanos distintos.")
 
-    return X, y, groups, has_groups
+    if "views" in data.files:
+        views = np.asarray(data["views"]).astype(str)
+    else:
+        views = np.array([core.view_of(kp) for kp in X], dtype=str)
+    if "contexts" in data.files:
+        contexts = np.asarray(data["contexts"]).astype(str)
+    else:
+        contexts = np.array([core.context_from_group(g) for g in groups], dtype=str)
+    if not (len(views) == len(contexts) == len(X)):
+        raise SystemExit("Error: views y contexts no coinciden con X.")
+
+    return X, y, groups, has_groups, views, contexts
 
 
 def augment(X_raw, y, groups, rng):
@@ -68,13 +92,18 @@ def augment(X_raw, y, groups, rng):
 
     Se aplica sobre las muestras crudas (antes de normalizar) y solo al lado de
     entrenamiento, para que la prueba siga siendo datos que el modelo no vio.
+    De perfil no se espeja: las muestras de perfil ya se normalizan mirando hacia
+    el mismo lado, asi que el espejo seria una copia identica. El ruido es
+    proporcional al tamano de la muestra: uno fijo borraba la senal de cabeza
+    adelantada de perfil, donde la cabeza mide un tercio que el ancho de hombros.
     """
     extra_X, extra_y, extra_g = [], [], []
     for kp, label, group in zip(X_raw, y, groups):
-        extra_X.append(core.mirror_keypoints(kp))
-        extra_y.append(label)
-        extra_g.append(group)
-        extra_X.append(core.jitter_keypoints(kp, std=AUGMENT_JITTER_STD, rng=rng))
+        if core.view_of(kp) != core.VIEW_SIDE:
+            extra_X.append(core.mirror_keypoints(kp))
+            extra_y.append(label)
+            extra_g.append(group)
+        extra_X.append(core.jitter_relative(kp, rel=AUGMENT_JITTER_REL, rng=rng))
         extra_y.append(label)
         extra_g.append(group)
     if not extra_X:
@@ -102,9 +131,9 @@ def split_by_group(X, y, groups, test_size=0.25):
         )
 
     # Un GroupShuffleSplit a secas puede dejar en la prueba grupos de una sola
-    # clase (con las 4 sesiones de 1-GRABAR-DATOS.bat, la prueba era UNA sesion)
-    # y la precision de prueba no significaba nada. Se reparte por clase: cada
-    # una aporta al menos un grupo completo a la prueba.
+    # clase (con pocas sesiones, la prueba era UNA sesion) y la precision de
+    # prueba no significaba nada. Se reparte por clase: cada una aporta al menos
+    # un grupo completo a la prueba.
     rng = np.random.default_rng(RANDOM_STATE)
     groups_by_class = {}
     for group in unique_groups:
@@ -127,10 +156,103 @@ def split_by_group(X, y, groups, test_size=0.25):
     return next(splitter.split(X, y, groups=groups))
 
 
+def print_coverage(y, views, contexts, groups):
+    """Cuantas muestras hay en cada una de las 4 situaciones (vista x contexto)
+    y de que combinaciones faltan datos. Devuelve la lista de faltantes."""
+    print("\nCobertura del dataset (muestras correctas / incorrectas, sesiones):")
+    print(f"  {'':22s}{'correctas':>10s}{'incorrectas':>13s}{'sesiones':>10s}")
+    faltan = []
+    for view in core.VIEWS:
+        for context in CONTEXTS:
+            mask = (views == view) & (contexts == context)
+            good = int(np.sum(y[mask] == 1))
+            bad = int(np.sum(y[mask] == 0))
+            sessions = len(set(groups[mask]))
+            print(f"  {view + ' / ' + context:22s}{good:>10d}{bad:>13d}{sessions:>10d}")
+            if good == 0 or bad == 0:
+                faltan.append(f"{context} de {view}: sin muestras " + ("correctas" if good == 0 else "incorrectas"))
+            elif min(good, bad) < MIN_PER_CELL or sessions < 2:
+                faltan.append(f"{context} de {view}: pocas muestras o una sola sesion")
+
+    otras = {}
+    for view in core.VIEWS:
+        mask = (views == view) & ~np.isin(contexts, CONTEXTS)
+        if mask.any():
+            otras[view] = (int(np.sum(y[mask] == 1)), int(np.sum(y[mask] == 0)), len(set(groups[mask])))
+    for view, (good, bad, sessions) in otras.items():
+        print(f"  {view + ' / sin contexto':22s}{good:>10d}{bad:>13d}{sessions:>10d}   (fotos antiguas o mixto)")
+
+    if faltan:
+        print("\nADVERTENCIA: faltan datos en estas situaciones y el detector sera poco fiable ahi:")
+        for texto in faltan:
+            print(f"  - {texto}")
+        print("  Graba cada una con 1-GRABAR-DATOS.bat (o collect_data.py --vista ... --contexto ...).")
+    return faltan
+
+
 def describe(name, y):
     total = len(y)
     correctas = int(np.sum(y == 1))
     print(f"{name}: {total} muestras  (correctas {correctas}, incorrectas {total - correctas})")
+
+
+def save_personal_thresholds(X_raw, y, contexts):
+    """Calcula los umbrales de las reglas de cada vista con TUS muestras
+    "correcta" y los guarda en config.json. Solo usa grabaciones con contexto
+    (las de collect_data.py): las fotos antiguas vienen de otras camaras y
+    calibrarian para ellas, no para la tuya. Devuelve True si cambio algo."""
+    propias = contexts != UNKNOWN_CONTEXT
+    X_own, y_own = X_raw[propias], y[propias]
+    correctas = [core.metrics_from_keypoints(kp) for kp in X_own[y_own == 1]]
+    incorrectas = [core.metrics_from_keypoints(kp) for kp in X_own[y_own == 0]]
+
+    cfg = AppConfig.load()
+    thresholds = cfg.thresholds()
+    cambio = False
+    print("\nUmbrales de las reglas (con tus grabaciones):")
+    for view in core.VIEWS:
+        nuevos, nota = personal_thresholds(correctas, base=thresholds, view=view)
+        print(f"  [{view}] {nota}")
+        if nuevos is None:
+            continue
+        thresholds = nuevos
+        cambio = True
+        if view == core.VIEW_SIDE:
+            print(
+                f"      espalda <= {nuevos.side_trunk_lean_max:.1f} grados   cabeza adelantada <= "
+                f"{nuevos.side_head_forward_max:.2f}   altura de cabeza >= {nuevos.side_neck_height_min:.2f}"
+            )
+        else:
+            print(
+                f"      hombros <= {nuevos.shoulder_tilt_max:.2f}   cabeza adelantada <= "
+                f"{nuevos.forward_head_max:.2f}   altura de cabeza >= {nuevos.neck_compression_min:.2f}"
+            )
+
+    if not cambio:
+        return False
+    cfg.set_thresholds(thresholds)
+    print("  (guardados en config.json)")
+
+    def marca_mal(m):
+        if m["view"] == core.VIEW_SIDE:
+            return (
+                m["trunk_lean"] > thresholds.side_trunk_lean_max
+                or m["forward_head"] > thresholds.side_head_forward_max
+                or m["neck_gap"] < thresholds.side_neck_height_min
+            )
+        return (
+            m["shoulder_tilt"] > thresholds.shoulder_tilt_max
+            or m["forward_head"] > thresholds.forward_head_max
+            or m["neck_gap"] < thresholds.neck_compression_min
+        )
+
+    for view in core.VIEWS:
+        for nombre, lote in (("correctas", correctas), ("incorrectas", incorrectas)):
+            medibles = [m for m in lote if m and m["view"] == view]
+            if medibles:
+                share = sum(marca_mal(m) for m in medibles) / len(medibles)
+                print(f"  [{view}] las reglas marcan como mala postura el {share:.0%} de tus {nombre}")
+    return True
 
 
 def main():
@@ -138,13 +260,54 @@ def main():
     parser.add_argument("--dataset", default=core.DATASET_FILE, help="archivo .npz de entrada")
     parser.add_argument("--test-size", type=float, default=0.25, help="proporcion de prueba")
     parser.add_argument("--sin-aumento", action="store_true", help="no agregar espejo ni ruido")
+    parser.add_argument(
+        "--solo-vista",
+        choices=list(core.VIEWS),
+        help="entrenar solo con una vista (por defecto se usan las dos)",
+    )
+    parser.add_argument(
+        "--solo-grabaciones",
+        action="store_true",
+        help="ignorar las fotos antiguas y usar solo lo que grabaste con collect_data.py",
+    )
+    parser.add_argument(
+        "--sin-umbrales",
+        action="store_true",
+        help="no recalcular los umbrales de las reglas en config.json",
+    )
     args = parser.parse_args()
 
     print("=== ENTRENAMIENTO DE RED NEURONAL ===")
 
-    X_raw, y, groups, has_groups = load_dataset(args.dataset)
+    X_raw, y, groups, has_groups, views, contexts = load_dataset(args.dataset)
     describe("Dataset", y)
+
+    if args.solo_grabaciones:
+        mask = contexts != UNKNOWN_CONTEXT
+        print(f"--solo-grabaciones: ignoro {int((~mask).sum())} muestras sin contexto (fotos antiguas).")
+        X_raw, y, groups, views, contexts = X_raw[mask], y[mask], groups[mask], views[mask], contexts[mask]
+    if args.solo_vista:
+        mask = views == args.solo_vista
+        print(f"--solo-vista {args.solo_vista}: ignoro {int((~mask).sum())} muestras de la otra vista.")
+        X_raw, y, groups, views, contexts = X_raw[mask], y[mask], groups[mask], views[mask], contexts[mask]
+
+    intermedias = int(np.sum(~np.isin(views, core.VIEWS)))
+    if intermedias:
+        print(
+            f"Descartadas {intermedias} muestras ni de frente ni de perfil (3/4, lejos o "
+            "deteccion mala): la app tampoco las mide."
+        )
+        mask = np.isin(views, core.VIEWS)
+        X_raw, y, groups, views, contexts = X_raw[mask], y[mask], groups[mask], views[mask], contexts[mask]
+    if len(X_raw) == 0:
+        raise SystemExit(
+            "Error: no queda ninguna muestra utilizable. Graba sesiones con "
+            "collect_data.py (1-GRABAR-DATOS.bat)."
+        )
+
+    describe("Utilizables", y)
     print(f"Grupos distintos (fotos/sesiones): {len(np.unique(groups))}")
+    print_coverage(y, views, contexts, groups)
     if not has_groups:
         print(
             "ADVERTENCIA: este dataset es de una version anterior y no guarda a que\n"
@@ -154,8 +317,6 @@ def main():
 
     if len(X_raw) < 10:
         print(f"\nADVERTENCIA: solo hay {len(X_raw)} muestras. Necesitas mas datos.")
-        print("Ejecuta: python collect_data.py 1 30")
-        print("Ejecuta: python collect_data.py 2 30")
     if len(np.unique(y)) < 2:
         raise SystemExit(
             "Error: el dataset tiene una sola clase. Recolecta posturas correctas E incorrectas."
@@ -166,6 +327,7 @@ def main():
 
     X_train_raw, y_train, g_train = X_raw[train_idx], y[train_idx], groups[train_idx]
     X_test_raw, y_test = X_raw[test_idx], y[test_idx]
+    v_test = views[test_idx]
 
     if len(np.unique(y_train)) < 2 or len(np.unique(y_test)) < 2:
         print(
@@ -184,17 +346,16 @@ def main():
     X_test, keep_test = core.features_matrix(X_test_raw)
     y_train = y_train[keep_train]
     y_test = y_test[keep_test]
+    v_test = v_test[keep_test]
 
     descartadas = (len(X_train_raw) - len(keep_train)) + (len(X_test_raw) - len(keep_test))
     if descartadas:
-        print(
-            f"Descartadas {descartadas} muestras no medibles (de perfil o con deteccion mala)."
-        )
+        print(f"Descartadas {descartadas} muestras no medibles tras normalizar.")
 
     if len(X_train) == 0 or len(X_test) == 0:
         raise SystemExit(
             "Error: no quedaron muestras utiles tras normalizar. Revisa que las "
-            "grabaciones sean de frente a la camara."
+            "grabaciones sean de frente o de perfil a la camara."
         )
 
     describe("Entrenamiento", y_train)
@@ -214,7 +375,7 @@ def main():
         solver="adam",
         max_iter=1000,
         early_stopping=usar_early_stopping,
-        validation_fraction=0.1 if usar_early_stopping else 0.1,
+        validation_fraction=0.1,
         random_state=RANDOM_STATE,
     )
     model.fit(X_train_scaled, y_train)
@@ -226,6 +387,14 @@ def main():
 
     print(f"\nAccuracy entrenamiento: {train_acc:.2%}")
     print(f"Accuracy prueba:        {test_acc:.2%}")
+
+    print("\nAccuracy de prueba por vista:")
+    for view in core.VIEWS:
+        mask = v_test == view
+        if mask.any():
+            print(f"  {view:7s}: {np.mean(y_pred[mask] == y_test[mask]):.2%}  ({int(mask.sum())} muestras)")
+        else:
+            print(f"  {view:7s}: sin muestras en la prueba")
 
     print("\nMatriz de confusion (prueba):")
     etiquetas = sorted(set(y_test.tolist()) | set(y_pred.tolist()))
@@ -264,9 +433,13 @@ def main():
             "n_test": int(len(X_test)),
             "n_grupos": int(len(np.unique(groups))),
             "division_por_grupo": bool(has_groups),
+            "muestras_por_vista": {k: int(v) for k, v in Counter(views.tolist()).items()},
         },
     )
     print(f"\nModelo guardado: {core.MODEL_FILE} (+ {core.SCALER_FILE}, {core.META_FILE})")
+
+    if not args.sin_umbrales:
+        save_personal_thresholds(X_raw, y, contexts)
 
 
 if __name__ == "__main__":

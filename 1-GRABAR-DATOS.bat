@@ -16,37 +16,70 @@ echo ===============================================
 echo   PASO 1 de 3 - GRABAR TUS POSTURAS
 echo ===============================================
 echo.
-echo Son 4 grabaciones de 20 segundos cada una.
-echo Ponte DE FRENTE a la camara, con los dos hombros visibles.
+echo Son 8 grabaciones de 20 segundos, en 4 situaciones:
+echo   sentado de frente, sentado de perfil, de pie de frente y de pie de perfil
+echo   ^(en cada una, una postura correcta y una incorrecta^).
+echo.
+echo DE FRENTE: mirando a la camara, con la cabeza y los dos hombros visibles.
+echo DE PERFIL: completamente de lado a la camara ^(no a 45 grados^), con la
+echo            nariz y las orejas visibles. Da igual hacia que lado mires.
+echo.
+echo Mientras mas variedad ^(distancia, luz, ropa, otro dia^), mejor aprende.
+echo Puedes repetir este archivo cuantas veces quieras: las grabaciones se suman.
 echo.
 pause
 
 echo.
-echo --- 1 de 4: POSTURA CORRECTA, SENTADO ---
-echo Sientate bien: espalda recta, hombros parejos, cabeza atras.
+echo --- 1 de 8: SENTADO DE FRENTE - POSTURA CORRECTA ---
+echo Sientate bien de frente: espalda recta, hombros parejos, cabeza atras.
 pause
-"%PY%" collect_data.py 1 20 --contexto sentado
+"%PY%" collect_data.py 1 20 --vista frente --contexto sentado
 
 echo.
-echo --- 2 de 4: POSTURA CORRECTA, DE PIE ---
-echo Ponte de pie, derecho.
+echo --- 2 de 8: SENTADO DE FRENTE - POSTURA INCORRECTA ---
+echo Encorvate de frente: hombros caidos y cabeza adelantada.
 pause
-"%PY%" collect_data.py 1 20 --contexto de_pie
+"%PY%" collect_data.py 2 20 --vista frente --contexto sentado
 
 echo.
-echo --- 3 de 4: POSTURA INCORRECTA, SENTADO ---
-echo Encorvate: hombros caidos y cabeza adelantada.
+echo --- 3 de 8: DE PIE DE FRENTE - POSTURA CORRECTA ---
+echo Ponte de pie, derecho, de frente a la camara.
 pause
-"%PY%" collect_data.py 2 20 --contexto sentado
+"%PY%" collect_data.py 1 20 --vista frente --contexto de_pie
 
 echo.
-echo --- 4 de 4: POSTURA INCORRECTA, DE PIE ---
+echo --- 4 de 8: DE PIE DE FRENTE - POSTURA INCORRECTA ---
 echo De pie pero mal: encorvado o ladeado.
 pause
-"%PY%" collect_data.py 2 20 --contexto de_pie
+"%PY%" collect_data.py 2 20 --vista frente --contexto de_pie
+
+echo.
+echo --- 5 de 8: SENTADO DE PERFIL - POSTURA CORRECTA ---
+echo Sientate de lado a la camara, espalda recta y la oreja sobre el hombro.
+pause
+"%PY%" collect_data.py 1 20 --vista perfil --contexto sentado
+
+echo.
+echo --- 6 de 8: SENTADO DE PERFIL - POSTURA INCORRECTA ---
+echo Sentado de lado: espalda encorvada y cabeza adelantada.
+pause
+"%PY%" collect_data.py 2 20 --vista perfil --contexto sentado
+
+echo.
+echo --- 7 de 8: DE PIE DE PERFIL - POSTURA CORRECTA ---
+echo De pie y de lado a la camara, derecho, oreja sobre el hombro.
+pause
+"%PY%" collect_data.py 1 20 --vista perfil --contexto de_pie
+
+echo.
+echo --- 8 de 8: DE PIE DE PERFIL - POSTURA INCORRECTA ---
+echo De pie y de lado: encorvado, con la cabeza adelantada.
+pause
+"%PY%" collect_data.py 2 20 --vista perfil --contexto de_pie
 
 echo.
 echo ===============================================
 echo   LISTO. Ahora abre 2-ENTRENAR.bat
+echo   ^(te dira si falta alguna de las 4 situaciones^)
 echo ===============================================
 pause

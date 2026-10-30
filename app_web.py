@@ -13,13 +13,13 @@ from flask import Flask, Response, jsonify, render_template, request
 
 import core
 from assessment import PostureAssessment
-from config import AppConfig
+from config import THRESHOLD_KEYS, AppConfig
 from history import SessionHistory
 from posture_metrics import (
-    CONTEXT_LABELS,
     SessionStats,
     detect_context,
     evaluate_aspects,
+    scene_label,
     summarize_aspects,
 )
 from voice_feedback import BreakReminder, DesktopNotifier, PostureVoiceCoach, VoiceFeedback
@@ -174,7 +174,7 @@ def capture_loop():
                 landmarks = results.pose_landmarks.landmark
                 is_correct, raw_feedback = predictor.predict(landmarks)
                 context = detect_context(landmarks)
-                context_text = CONTEXT_LABELS[context]
+                context_text = scene_label(landmarks)
                 aspects = evaluate_aspects(landmarks, cfg.thresholds())
                 metrics = core.metrics_from_keypoints(core.keypoints_from_landmarks(landmarks))
                 assessment.record(is_correct, raw_feedback, context, aspects, metrics)
@@ -210,11 +210,11 @@ def capture_loop():
             # --- Fase 3: coaching continuo (comportamiento normal) ---
             landmarks = results.pose_landmarks.landmark
             is_correct, feedback = predictor.predict(landmarks)
-            context_text = CONTEXT_LABELS[detect_context(landmarks)]
+            context_text = scene_label(landmarks)
             session.record(is_correct, feedback)
 
             if is_correct is None:
-                status = "Ponte de frente a la cámara"
+                status = "Ubícate de frente o de perfil"
                 color = "blue"
             elif is_correct:
                 status = "CORRECTA"
@@ -413,7 +413,7 @@ def api_config():
 
     payload = request.get_json(silent=True) or {}
     # Cambiar un umbral a mano deja de ser calibracion automatica.
-    if any(key in payload for key in ("shoulder_tilt_max", "forward_head_max", "neck_compression_min")):
+    if any(key in payload for key in THRESHOLD_KEYS):
         payload.setdefault("calibrated", False)
     cfg.update(payload)
     _apply_config()

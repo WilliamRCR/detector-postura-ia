@@ -302,7 +302,7 @@ class PostureVoiceCoach:
     # Textos que NO sirven como correccion. El modelo y las reglas por umbral
     # pueden discrepar: la red dice "incorrecta" mientras las reglas dicen
     # "Buena postura", y la voz terminaba diciendo "buena postura" como aviso.
-    NOT_A_CORRECTION = ("Buena postura", "Ubícate de frente a la cámara")
+    NOT_A_CORRECTION = ("Buena postura", "Ubícate de frente a la cámara", "Ubícate de frente o de perfil a la cámara")
     GENERIC_ALERT = "Corrige tu postura. Endereza la espalda y relaja los hombros."
 
     def __init__(

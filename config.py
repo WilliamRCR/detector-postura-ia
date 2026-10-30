@@ -21,6 +21,10 @@ DEFAULTS = {
     "shoulder_tilt_max": 0.20,
     "forward_head_max": 0.55,
     "neck_compression_min": 0.23,
+    # Umbrales de perfil (de lado la oreja, el hombro y la cadera se miden distinto)
+    "side_head_forward_max": 0.65,   # oreja por delante del hombro / altura del cuello
+    "side_neck_height_min": 1.70,    # altura de la cabeza sobre el hombro, en tamanos de cabeza
+    "side_trunk_lean_max": 12.0,     # grados que el hombro queda por delante de la cadera
     "calibrated": False,
     # Avisos
     "alert_after_seconds": 6.0,
@@ -45,13 +49,23 @@ LIMITS = {
     "shoulder_tilt_max": (0.02, 1.0),
     "forward_head_max": (0.05, 3.0),
     "neck_compression_min": (0.02, 1.0),
+    "side_head_forward_max": (0.05, 3.0),
+    "side_neck_height_min": (0.3, 5.0),
+    "side_trunk_lean_max": (2.0, 60.0),
     "alert_after_seconds": (1.0, 120.0),
     "alert_repeat_seconds": (5.0, 600.0),
     "break_minutes": (5, 240),
     "assessment_seconds": (5.0, 300.0),
 }
 
-THRESHOLD_KEYS = ("shoulder_tilt_max", "forward_head_max", "neck_compression_min")
+THRESHOLD_KEYS = (
+    "shoulder_tilt_max",
+    "forward_head_max",
+    "neck_compression_min",
+    "side_head_forward_max",
+    "side_neck_height_min",
+    "side_trunk_lean_max",
+)
 
 
 def _coerce(key, value):
@@ -142,6 +156,9 @@ class AppConfig:
             shoulder_tilt_max=self._values["shoulder_tilt_max"],
             forward_head_max=self._values["forward_head_max"],
             neck_compression_min=self._values["neck_compression_min"],
+            side_head_forward_max=self._values["side_head_forward_max"],
+            side_neck_height_min=self._values["side_neck_height_min"],
+            side_trunk_lean_max=self._values["side_trunk_lean_max"],
         )
 
     def set_thresholds(self, thresholds, calibrated=True, save=True):
@@ -150,6 +167,9 @@ class AppConfig:
                 "shoulder_tilt_max": thresholds.shoulder_tilt_max,
                 "forward_head_max": thresholds.forward_head_max,
                 "neck_compression_min": thresholds.neck_compression_min,
+                "side_head_forward_max": thresholds.side_head_forward_max,
+                "side_neck_height_min": thresholds.side_neck_height_min,
+                "side_trunk_lean_max": thresholds.side_trunk_lean_max,
                 "calibrated": calibrated,
             },
             save=save,

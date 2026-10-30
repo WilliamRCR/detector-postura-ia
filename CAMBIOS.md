@@ -21,7 +21,7 @@ Para correr los tests no hace falta cámara ni modelo entrenado:
 python -m unittest discover -s tests -t .
 ```
 
-Deben pasar los 116.
+Deben pasar los 159.
 
 ---
 
@@ -151,9 +151,41 @@ Ahora el video se ajusta **midiendo la interfaz ya construida** en vez de estima
 - **Ajustes**: la rueda del ratón dejaba de funcionar al pasar sobre los controles; y cambiar la cámara avisa de que se aplica al reiniciar.
 - Textos con tilde que OpenCV dibujaba como `?` (ventana de `main.py` y de grabación).
 
+## Revisión del entrenamiento: las cuatro situaciones
+
+El detector tiene que funcionar **sentado de frente, sentado de perfil, de pie de frente y de pie de perfil**. Antes todo asumía vista frontal (idea 4 del PDF, "solo datos frontales"), así que el perfil no se podía ni grabar ni medir.
+
+Lo medido con las 23 grabaciones de webcam y las 428 fotos antiguas:
+
+- **El modelo entrenado con las fotos antiguas daba "correcta" al 100% de las grabaciones de webcam**, incluidas las 17 de mala postura: aprendía la vista de perfil de otras cámaras y se usaba de frente.
+- **El criterio de "de frente" descartaba la mitad de la webcam**: usaba hombros/torso >= 0.55 y su mediana en la webcam era 0.56, porque con una cámara de portátil las caderas no se ven y MediaPipe las inventa.
+- **Con los umbrales por defecto, la regla de cabeza adelantada marcaba mal todas las posturas buenas de la webcam** (miden 1.03-1.34 contra un umbral de 0.55) y la calibración en vivo no podía corregirlo (tope 0.88).
+- Las 3 medidas de perfil que se probaron sobre las fotos separan bien correctas de incorrectas (AUC 0.90-0.93).
+
+### Qué cambió
+
+| Dónde | Cambio |
+|---|---|
+| `core.py` | `view_of(kp)` -> `frente` / `perfil` / `intermedia` (3/4 o lejos: no se mide). De frente usa nariz centrada entre las orejas, hombros a similar profundidad y ancho >= 0.08 (sin caderas). De perfil usa nariz fuera del eje de las orejas y hombros angostos frente al cuello. Mediciones sobre datos reales: webcam de frente 23/23, fotos antiguas 346 perfil / 81 intermedias / 1 frente |
+| `core.py` | **Escala por vista**: ancho de hombros de frente, tamaño de la cabeza (nariz-oreja) de perfil. De perfil la muestra se espeja para mirar siempre al mismo lado: da igual hacia dónde mires. **111 características** (`FEATURE_VERSION = 3`): hay que volver a entrenar |
+| `posture_metrics.py` | Reglas de perfil: oreja por delante del hombro, altura de cabeza y inclinación del tronco ("Endereza la espalda"). Calibración en vivo y umbrales personales **por vista**; la vista que no usaste queda intacta |
+| `config.py`, apps | 3 umbrales de perfil (`side_*`) editables en Ajustes (escritorio y web). La app muestra "De perfil · Sentado" y pide "Ubícate de frente o de perfil" solo a 45° o muy lejos |
+| `collect_data.py` | `--vista frente|perfil`: solo guarda lo que está en la vista pedida. Guarda vista y contexto de cada muestra (los datasets viejos siguen cargando; el contexto se lee del nombre de la sesión) |
+| `train.py` | Ya no filtra por vista. Imprime la **cobertura de las 4 situaciones** y avisa de las que faltan o tienen pocas muestras/una sola sesión; precisión **por vista**; umbrales personales por vista (solo con tus grabaciones, no las fotos). `--solo-vista`, `--solo-grabaciones`. El aumento no espeja el perfil y el ruido es proporcional a la escala de cada vista |
+| `1-GRABAR-DATOS.bat` | 8 grabaciones (4 situaciones x correcta/incorrecta) |
+| `collect_from_images.py` | Conserva frente y perfil; solo descarta las intermedias |
+
+### Lo que conviene saber
+
+- **El modelo guardado ya no sirve** (107 características vs 111): la app lo dice y hay que correr `2-ENTRENAR.bat`. Con los datos actuales entrena, pero las cuatro situaciones salen como "sin muestras" hasta que grabes.
+- **Las fotos de perfil sirven como complemento**, no como dataset principal: vienen de otras cámaras y no sabemos si la persona está sentada o de pie.
+- **De perfil, la inclinación del tronco usa la cadera**, que con una cámara de portátil puede quedar fuera de cuadro. Si el consejo de espalda falla, ajusta su umbral en Ajustes.
+- Los umbrales de la vista de perfil se validaron solo con las fotos antiguas (reglas: marcan mal el 95% de las incorrectas y el 17% de las correctas). Falta confirmarlos con grabaciones propias de perfil.
+- **Lo que falta es de datos, no de código:** grabar las 8 combinaciones, mejor varias veces y en días distintos. El tipo de modelo no es la palanca: red actual, red pequeña, Random Forest y solo 8 características quedan entre 88 y 90% sobre las fotos antiguas.
+
 ## Tests
 
-**116 tests (105 + 11 de esta revisión), ninguno necesita cámara ni modelo entrenado.** Usan poses falsas de MediaPipe (`tests/fake_pose.py`) para ejercitar el código real.
+**159 tests (105 + 54 de las revisiones), ninguno necesita cámara ni modelo entrenado.** Usan poses falsas de MediaPipe (`tests/fake_pose.py`) para ejercitar el código real.
 
 | Archivo | Cubre |
 |---|---|

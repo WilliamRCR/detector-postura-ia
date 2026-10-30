@@ -82,6 +82,57 @@ def make_landmarks(
     return points
 
 
+def make_side_landmarks(
+    facing=1,
+    ear_forward=0.01,
+    ear_gap=0.12,
+    trunk_lean_deg=3.0,
+    center_x=0.50,
+    shoulder_y=0.40,
+    torso=0.35,
+    scale=1.0,
+):
+    """Pose de perfil realista: la persona mira hacia +x (facing=1) o -x (-1).
+
+    - ear_forward:   cuanto se adelanta la oreja respecto al hombro (cabeza adelantada)
+    - ear_gap:       distancia vertical oreja-hombro (cuello estirado o hundido)
+    - trunk_lean_deg: grados que el hombro queda por delante de la cadera
+    - scale:         distancia a la camara (escala TODO el cuerpo por igual)
+
+    De perfil los dos hombros casi coinciden y la nariz sale del eje de las orejas.
+    """
+    s = scale
+    f = facing
+    ear_forward, ear_gap, torso = ear_forward * s, ear_gap * s, torso * s
+    points = [FakeLandmark(center_x, shoulder_y, 0.0) for _ in range(core.NUM_LANDMARKS)]
+
+    # Hombros casi superpuestos (separacion minima en x)
+    points[core.SHOULDER_L] = FakeLandmark(center_x - 0.01 * s, shoulder_y, 0.0)
+    points[core.SHOULDER_R] = FakeLandmark(center_x + 0.01 * s, shoulder_y, 0.0)
+
+    ear_x = center_x + f * ear_forward
+    ear_y = shoulder_y - ear_gap
+    points[core.EAR_L] = FakeLandmark(ear_x - 0.004 * s, ear_y, 0.0)
+    points[core.EAR_R] = FakeLandmark(ear_x + 0.004 * s, ear_y, 0.0)
+    points[core.NOSE] = FakeLandmark(ear_x + f * 0.06 * s, ear_y + 0.03 * s, 0.0)
+
+    hip_y = shoulder_y + torso
+    hip_x = center_x - f * math.tan(math.radians(trunk_lean_deg)) * torso
+    points[core.HIP_L] = FakeLandmark(hip_x - 0.005 * s, hip_y, 0.0)
+    points[core.HIP_R] = FakeLandmark(hip_x + 0.005 * s, hip_y, 0.0)
+    return points
+
+
+def good_side_posture():
+    """De perfil, erguido: oreja sobre el hombro, cuello estirado y tronco recto."""
+    return make_side_landmarks(ear_forward=0.01, ear_gap=0.12, trunk_lean_deg=3.0)
+
+
+def bad_side_posture():
+    """De perfil, encorvado: cabeza adelantada, cuello hundido y tronco inclinado."""
+    return make_side_landmarks(ear_forward=0.10, ear_gap=0.07, trunk_lean_deg=22.0)
+
+
 def make_profile_landmarks():
     """Pose de perfil: los hombros se superponen y el ancho colapsa."""
     return make_landmarks(shoulder_width=0.01)

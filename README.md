@@ -82,38 +82,50 @@ En la carpeta del proyecto hay tres archivos `.bat`. **Doble clic, en orden**, y
 
 | Archivo | Qué hace |
 |---|---|
-| `1-GRABAR-DATOS.bat` | Te guía por las 4 grabaciones de 20 segundos |
+| `1-GRABAR-DATOS.bat` | Te guía por las 8 grabaciones de 20 segundos (4 situaciones × correcta/incorrecta) |
 | `2-ENTRENAR.bat` | Entrena el modelo con lo que grabaste |
 | `3-ABRIR-APP.bat` | Abre la app de escritorio |
 
 Usan el Python del entorno virtual y se ubican solos en la carpeta correcta, así que funcionan aunque Python no esté en el PATH. Abajo está el detalle de cada paso y qué deberías ver.
 
-### 1. Recolectar datos (desde la webcam, de frente)
+### 1. Recolectar datos (desde la webcam: 4 situaciones)
+
+El detector funciona en **cuatro situaciones**, y hay que grabar las cuatro, cada una con postura correcta e incorrecta (8 grabaciones):
+
+| | Sentado | De pie |
+|---|---|---|
+| **De frente** | `--vista frente --contexto sentado` | `--vista frente --contexto de_pie` |
+| **De perfil** | `--vista perfil --contexto sentado` | `--vista perfil --contexto de_pie` |
 
 ```bash
-python collect_data.py <etiqueta> [segundos] --contexto <sentado|de_pie|mixto>
+python collect_data.py <etiqueta> [segundos] --vista <frente|perfil> --contexto <sentado|de_pie|mixto>
 ```
 
 - `etiqueta`: `1` = postura correcta, `2` = postura incorrecta
 - `segundos`: duración de la grabación (por defecto 20)
-- `--contexto`: solo para llevar registro de qué combinaciones ya cubriste
+- `--vista`: cómo estás frente a la cámara. **De frente**: mirando a la cámara, con la cabeza y los dos hombros visibles. **De perfil**: completamente de lado (no a 45°), con la nariz y las orejas visibles; da igual hacia qué lado mires
+- `--contexto`: sentado o de pie. `train.py` lo usa para avisarte de las combinaciones que te falten
 - `--camara N`: usar otra cámara (por defecto, la de `config.json`)
 
 Tienes 3 segundos para prepararte y luego se graba automáticamente. Presiona `q` para cancelar.
 
-**Repite para cada combinación** para que el modelo generalice bien:
+**Repite para cada combinación** para que el modelo generalice bien (`1-GRABAR-DATOS.bat` lo hace por ti):
 
 ```bash
-python collect_data.py 1 20 --contexto sentado
-python collect_data.py 1 20 --contexto de_pie
-python collect_data.py 2 20 --contexto sentado
-python collect_data.py 2 20 --contexto de_pie
+python collect_data.py 1 20 --vista frente --contexto sentado
+python collect_data.py 2 20 --vista frente --contexto sentado
+python collect_data.py 1 20 --vista frente --contexto de_pie
+python collect_data.py 2 20 --vista frente --contexto de_pie
+python collect_data.py 1 20 --vista perfil --contexto sentado
+python collect_data.py 2 20 --vista perfil --contexto sentado
+python collect_data.py 1 20 --vista perfil --contexto de_pie
+python collect_data.py 2 20 --vista perfil --contexto de_pie
 ```
 
 Para la postura incorrecta, mantén errores típicos: hombros caídos o desnivelados, cabeza adelantada, espalda encorvada, etc. Conviene variar el tipo de error entre corridas.
 
 Detalles importantes:
-- **Graba siempre de frente**, con los dos hombros visibles. Las muestras de perfil se descartan automáticamente y el contador en pantalla te avisa cuántas se están perdiendo.
+- **Solo se guarda lo que está en la vista que pediste.** Si dices `--vista perfil` y estás de frente (o a 45°), esas muestras se descartan y el contador en pantalla te avisa cuántas se pierden.
 - Se guardan las **muestras crudas, sin espejo ni ruido**. El aumento lo hace `train.py` *después* de dividir entrenamiento/prueba, para que la precisión reportada sea real.
 - Cada corrida queda como una **sesión** identificada, y `train.py` usa esa sesión para dividir sin mezclar frames casi idénticos entre entrenamiento y prueba. Por eso conviene hacer **varias corridas cortas** en vez de una sola larga: con menos de 4 sesiones el reparto vuelve a ser por muestra y la precisión se infla.
 - Cada corrida **se agrega** a `dataset_posturas.npz` (no lo sobreescribe) y se registra en `dataset_sessions.json`.
@@ -124,7 +136,12 @@ Detalles importantes:
 python train.py
 ```
 
-Opciones: `--dataset otro.npz`, `--test-size 0.25`, `--sin-aumento`.
+Opciones: `--dataset otro.npz`, `--test-size 0.25`, `--sin-aumento`, `--solo-vista frente|perfil`, `--solo-grabaciones` (ignora las fotos antiguas), `--sin-umbrales`.
+
+- **Te dice qué situaciones faltan.** Imprime una tabla de cobertura (vista × contexto × correcta/incorrecta, con el número de sesiones) y avisa de las combinaciones sin datos o con pocos. Con una situación sin datos, el detector será poco fiable ahí.
+- **Reporta la precisión por vista** (de frente y de perfil), además de la matriz de confusión.
+- **Descarta las muestras intermedias** (3/4, muy lejos): la app tampoco las mide.
+- **Calcula tus umbrales personales** para cada vista con tus muestras "correcta" (hacen falta al menos 20 por vista) y los guarda en `config.json`. Solo usa tus grabaciones, no las fotos antiguas. Los umbrales por defecto salen de otra cámara: en una webcam de portátil la regla de *cabeza adelantada* llegó a marcar mal todas las posturas buenas. `--sin-umbrales` lo omite.
 
 Genera `modelo_postura.pkl`, `scaler.pkl` y `modelo_meta.json` (que guarda con qué formato de características se entrenó). Vuelve a ejecutarlo cada vez que agregues datos nuevos.
 
@@ -220,16 +237,16 @@ La pestaña **Historial** muestra una barra por día de los últimos 7 días con
 
 ## Sobre las fotos de `dataset/`
 
-`dataset/correcta` y `dataset/incorrecta` traen fotos de stock y de Roboflow que **no sirven para entrenar este detector**, por dos razones medidas sobre las propias fotos:
+`dataset/correcta` y `dataset/incorrecta` traen fotos de stock y de Roboflow. Sirven como **complemento**, no como dataset principal, por dos razones medidas sobre las propias fotos:
 
-- **Son casi todas de perfil.** De 428 fotos en las que MediaPipe detecta una persona, solo 3 están tomadas de frente. La webcam y `posture_metrics.py` ven al usuario de frente: el modelo aprendería una vista y se usaría en otra.
+- **Vienen de otras cámaras y encuadres, y casi todas son de perfil** (de 428 fotos con persona detectada, solo 1 es de frente) sin saber si la persona está sentada o de pie. Entrenar solo con ellas hizo que el modelo diera "correcta" al 100% de las grabaciones de webcam de frente. Tus propias grabaciones, en las 4 situaciones, son las que cuentan.
 - **Hay muchas menos fotos distintas de las que parece.** Las 160 "correctas" de Roboflow son 57 originales con recortes repetidos, y las 276 "incorrectas" son 92. Al dividir al azar, copias de la misma foto caían en entrenamiento y prueba a la vez.
 
 Por eso el camino recomendado es `collect_data.py`. Si de todas formas quieres inspeccionar las fotos:
 
 ```bash
-python collect_from_images.py                  # solo frontales, agrupando por foto original
-python collect_from_images.py --incluir-perfil # todo (no recomendado)
+python collect_from_images.py                        # frente y perfil, agrupando por foto original
+python collect_from_images.py --incluir-intermedias  # todo (incluye 3/4, que no se miden)
 ```
 
 Escribe en `dataset_imagenes.npz`, **aparte** del dataset de la webcam, para no pisarlo.
@@ -242,10 +259,12 @@ Escribe en `dataset_imagenes.npz`, **aparte** del dataset de la webcam, para no 
 
 Hay dos señales independientes:
 
-- **Estado CORRECTA/INCORRECTA**: lo decide la red neuronal. Ya no recibe las 99 coordenadas crudas, sino 107 características: los 33 puntos centrados en el medio de los hombros y divididos entre el ancho de hombros, más las razones de postura y los ángulos de cuello y torso.
-- **Consejo específico y checklist**: lo calculan reglas geométricas en `posture_metrics.py` sobre tres aspectos (hombros nivelados, cabeza no adelantada, altura de cabeza/cuello), con los umbrales de `config.json`.
+- **Estado CORRECTA/INCORRECTA**: lo decide la red neuronal. Ya no recibe las 99 coordenadas crudas, sino 111 características: los 33 puntos centrados en el medio de los hombros y divididos entre una escala (el ancho de hombros de frente; el tamaño de la cabeza de perfil, porque los hombros se superponen), más medidas propias de cada vista, ángulos de cuello y torso y un indicador de vista. De perfil la muestra se orienta siempre hacia el mismo lado, así que da igual hacia dónde mires.
+- **Consejo específico y checklist**: lo calculan reglas geométricas en `posture_metrics.py`, con los umbrales de `config.json`. **De frente**: hombros nivelados, cabeza no adelantada, altura de cabeza/cuello. **De perfil**: cabeza no adelantada (oreja sobre el hombro), altura de cabeza y espalda recta (inclinación del tronco).
 
-Cuando no se puede medir con confianza (estás de perfil, o muy lejos), el estado no adivina: muestra "Ponte de frente a la cámara".
+La app decide en cada fotograma si estás **de frente** o **de perfil** (se ve en la línea de abajo: "De perfil · Sentado"). Cuando estás a 45° o muy lejos no se puede medir con confianza y el estado no adivina: muestra "Ubícate de frente o de perfil".
+
+> De perfil, la inclinación del tronco usa la cadera, que con una cámara de portátil puede quedar fuera de cuadro y estimarse mal. Si el consejo de espalda no te convence, ajusta su umbral en **Ajustes**.
 
 ---
 
@@ -255,9 +274,9 @@ Cuando no se puede medir con confianza (estás de perfil, o muy lejos), el estad
 python -m unittest discover -s tests -t .
 ```
 
-105 tests que corren sin cámara ni modelo entrenado: usan poses falsas de MediaPipe (`tests/fake_pose.py`) para ejercitar el código real.
+159 tests que corren sin cámara ni modelo entrenado: usan poses falsas de MediaPipe (`tests/fake_pose.py`) para ejercitar el código real.
 
-Cubren la normalización (que acercarte a la cámara no cambie lo que ve el modelo), la detección de perfil, el espejo, los avisos por tiempo sostenido, los recordatorios de pausa, la calibración con sus salvaguardas, el historial SQLite, la configuración con sus límites y todas las rutas de `app_web`.
+Cubren la normalización (que acercarte a la cámara no cambie lo que ve el modelo), la detección de frente y de perfil (incluida la simetría izquierda/derecha), las reglas y la calibración de cada vista, la cobertura de las 4 situaciones, el espejo, los umbrales personales, los avisos por tiempo sostenido, los recordatorios de pausa, la calibración con sus salvaguardas, el historial SQLite, la configuración con sus límites y todas las rutas de `app_web`.
 
 ---
 
@@ -332,23 +351,21 @@ Si el modelo fue entrenado con otra versión de scikit-learn, conviene reentrena
 ### ❌ El entrenamiento avisa "solo hay N grupos distintos"
 **Causa**: grabaste todo en una o dos corridas, así que no hay suficientes sesiones para dividir por grupo.
 
-**Solución**: graba varias corridas cortas en vez de una larga:
+**Solución**: graba varias corridas cortas en vez de una larga (lo más fácil es repetir `1-GRABAR-DATOS.bat`, que hace las 8):
 ```bash
-python collect_data.py 1 20 --contexto sentado
-python collect_data.py 1 20 --contexto de_pie
-python collect_data.py 2 20 --contexto sentado
-python collect_data.py 2 20 --contexto de_pie
+python collect_data.py 1 20 --vista frente --contexto sentado
+python collect_data.py 2 20 --vista frente --contexto sentado
 python train.py
 ```
 
-### ❌ "No se guardó ninguna muestra frontal"
-**Causa**: estabas de perfil o muy de lado durante toda la grabación.
+### ❌ "No se guardó ninguna muestra de frente" (o "de perfil")
+**Causa**: no estabas en la vista que pediste con `--vista`: de frente a la cámara, o completamente de lado (no a 45°).
 
-**Solución**: ponte de frente a la cámara, con los dos hombros visibles, y vuelve a grabar.
+**Solución**: ubícate en esa vista, con la cabeza y los hombros bien visibles, y vuelve a grabar.
 
 ### ❌ El veredicto o el contexto no parecen correctos
 - **"Piernas no visibles"**: es normal si la cámara solo capta torso y cabeza; la detección sentado/de pie necesita ver cadera, rodilla y tobillo.
-- **"Ponte de frente a la cámara"**: el ancho de hombros se ve demasiado pequeño (estás de perfil o muy lejos).
+- **"Ubícate de frente o de perfil"**: estás a 45° o muy lejos, y la app no adivina. Gírate del todo hacia la cámara o completamente de lado.
 - Si el checklist marca ✗ en un aspecto que consideras correcto, haz la evaluación de 30s con buena postura para calibrar, o ajusta los umbrales en **Ajustes**.
 
 ### ❌ La cámara se ve muy lenta o lag
@@ -360,7 +377,7 @@ python train.py
 
 ```
 detector-postura-ia/
-├── 1-GRABAR-DATOS.bat      # Atajo: graba las 4 sesiones de entrenamiento
+├── 1-GRABAR-DATOS.bat      # Atajo: graba las 8 sesiones de entrenamiento (4 situaciones × correcta/incorrecta)
 ├── 2-ENTRENAR.bat          # Atajo: entrena el modelo
 ├── 3-ABRIR-APP.bat         # Atajo: abre la app de escritorio
 ├── core.py                 # Keypoints, características normalizadas, carga del modelo y predicción
@@ -374,7 +391,7 @@ detector-postura-ia/
 ├── app_web.py              # Interfaz web (Flask)
 ├── templates/index.html    # Frontend de la interfaz web
 ├── main.py                 # Detector en ventana de OpenCV (sin evaluación inicial)
-├── collect_data.py         # Recolectar datos desde la webcam (solo frontales, por sesión)
+├── collect_data.py         # Recolectar datos desde la webcam (frente o perfil, por sesión)
 ├── collect_from_images.py  # Inspeccionar las fotos de dataset/ (no recomendado para entrenar)
 ├── train.py                # Entrenar con división por grupo y matriz de confusión
 ├── tests/                  # Tests que corren sin cámara ni modelo
@@ -396,6 +413,6 @@ detector-postura-ia/
 
 - Para mejores resultados, usa buena iluminación
 - Mantén una distancia adecuada de la cámara (1-2 metros) y asegúrate de que se vean tus hombros
-- **Entrena con la misma cámara y el mismo encuadre en el que lo vas a usar**, y siempre de frente
+- **Entrena con la misma cámara y el mismo encuadre en el que lo vas a usar**, y cubre las cuatro situaciones (de frente y de perfil, sentado y de pie)
 - Todo se procesa en tu equipo: no se envían imágenes ni audio a ningún servicio externo, y el video no se guarda (solo landmarks numéricos al recolectar datos y estadísticas en el historial)
 - Si tus amigos tienen problemas, sugiere que actualicen sus drivers de cámara

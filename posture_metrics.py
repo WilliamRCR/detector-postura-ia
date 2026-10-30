@@ -35,6 +35,13 @@ class PostureThresholds:
     forward_head_max: float = 0.55      # cabeza adelantada / ancho de hombros
     neck_compression_min: float = 0.23  # oreja-hombro / largo de torso
 
+    # De perfil se miden otras cosas (el ancho de hombros desaparece). Valores
+    # por defecto tomados de las fotos de perfil del repo: oreja por delante del
+    # hombro, altura de la cabeza y grados de inclinacion del tronco.
+    side_head_forward_max: float = 0.65  # oreja por delante del hombro / altura del cuello
+    side_neck_height_min: float = 1.70   # altura de cabeza sobre el hombro / tamano de cabeza
+    side_trunk_lean_max: float = 12.0    # grados: hombro por delante de la cadera
+
 
 DEFAULT_THRESHOLDS = PostureThresholds()
 
@@ -51,7 +58,16 @@ def evaluate_posture(landmarks, thresholds=None):
     thresholds = thresholds or DEFAULT_THRESHOLDS
     metrics = compute_metrics(landmarks)
     if metrics is None:
-        return "Ubícate de frente a la cámara"
+        return core.UNMEASURABLE_MESSAGE
+
+    if metrics["view"] == core.VIEW_SIDE:
+        if metrics["trunk_lean"] > thresholds.side_trunk_lean_max:
+            return "Endereza la espalda"
+        if metrics["forward_head"] > thresholds.side_head_forward_max:
+            return "Retrasa un poco la cabeza"
+        if metrics["neck_gap"] < thresholds.side_neck_height_min:
+            return "Levanta un poco la cabeza"
+        return "Buena postura"
 
     if metrics["shoulder_tilt"] > thresholds.shoulder_tilt_max:
         return "Endereza los hombros"
@@ -66,11 +82,16 @@ ASPECT_LABELS = {
     "hombros": "Hombros nivelados",
     "cabeza_adelantada": "Cabeza no adelantada",
     "altura_cabeza": "Buena altura de cabeza/cuello",
+    "espalda": "Espalda recta",  # solo de perfil
 }
+
+# Como se llama cada vista en pantalla.
+VIEW_LABELS = {core.VIEW_FRONT: "De frente", core.VIEW_SIDE: "De perfil"}
 
 
 def evaluate_aspects(landmarks, thresholds=None):
-    """Evalua las 3 dimensiones de postura de forma independiente (a diferencia
+    """Evalua las 3 dimensiones de postura de la vista (de perfil: sin hombros,
+    con espalda) de forma independiente (a diferencia
     de evaluate_posture, que corta en la primera que falla), para poder armar
     un listado de aspectos positivos/negativos en vez de un unico mensaje.
     Devuelve {clave: True/False} o None si no se puede medir con confianza."""
@@ -78,6 +99,12 @@ def evaluate_aspects(landmarks, thresholds=None):
     metrics = compute_metrics(landmarks)
     if metrics is None:
         return None
+    if metrics["view"] == core.VIEW_SIDE:
+        return {
+            "cabeza_adelantada": metrics["forward_head"] <= thresholds.side_head_forward_max,
+            "altura_cabeza": metrics["neck_gap"] >= thresholds.side_neck_height_min,
+            "espalda": metrics["trunk_lean"] <= thresholds.side_trunk_lean_max,
+        }
     return {
         "hombros": metrics["shoulder_tilt"] <= thresholds.shoulder_tilt_max,
         "cabeza_adelantada": metrics["forward_head"] <= thresholds.forward_head_max,
@@ -108,6 +135,9 @@ CALIBRATION_BOUNDS = {
     "shoulder_tilt_max": (0.7, 1.6),
     "forward_head_max": (0.7, 1.6),
     "neck_compression_min": (0.6, 1.3),
+    "side_head_forward_max": (0.6, 1.6),
+    "side_neck_height_min": (0.7, 1.2),
+    "side_trunk_lean_max": (0.6, 1.5),
 }
 
 # Minimos para que valga la pena calibrar: pocas muestras o una postura de
@@ -132,29 +162,52 @@ def _percentile(values, pct):
     return ordered[low] + (ordered[high] - ordered[low]) * (pos - low)
 
 
+# Metricas que acumula el calibrador en cada vista.
+_VIEW_KEYS = {
+    core.VIEW_FRONT: ("shoulder_tilt", "forward_head", "neck_gap"),
+    core.VIEW_SIDE: ("forward_head", "neck_gap", "trunk_lean"),
+}
+
+
 class PostureCalibrator:
     """Acumula las metricas de la evaluacion inicial para derivar umbrales
     propios de esa persona y esa camara.
 
     Los umbrales por defecto son iguales para todos, pero cada cuerpo y cada
     encuadre son distintos: lo que para una persona es 'hombros nivelados'
-    puede medir distinto en otra.
+    puede medir distinto en otra. Calibra la vista en la que estuvo la persona
+    durante la evaluacion (de frente o de perfil) y deja intacta la otra.
     """
 
     def __init__(self):
-        self._samples = {"shoulder_tilt": [], "forward_head": [], "neck_gap": []}
+        self._samples = {
+            view: {key: [] for key in keys} for view, keys in _VIEW_KEYS.items()
+        }
 
     def record(self, metrics):
         if not metrics:
             return
-        for key, bucket in self._samples.items():
+        bucket = self._samples.get(metrics.get("view", core.VIEW_FRONT))
+        if bucket is None:
+            return
+        for key, values in bucket.items():
             value = metrics.get(key)
             if value is not None and math.isfinite(value):
-                bucket.append(float(value))
+                values.append(float(value))
+
+    def _count(self, view):
+        return len(self._samples[view][_VIEW_KEYS[view][0]])
+
+    @property
+    def view(self):
+        """La vista con mas muestras (de frente si no hay ninguna)."""
+        if self._count(core.VIEW_SIDE) > self._count(core.VIEW_FRONT):
+            return core.VIEW_SIDE
+        return core.VIEW_FRONT
 
     @property
     def samples(self):
-        return len(self._samples["shoulder_tilt"])
+        return self._count(self.view)
 
     def suggest(self, base=None, percent_correct=100.0):
         """Devuelve (umbrales, motivo). Si no hay datos suficientes o la postura
@@ -169,17 +222,31 @@ class PostureCalibrator:
                 "postura y vuelve a evaluarte."
             )
 
-        # Para hombros y cabeza adelantada (menos es mejor) tomamos el percentil
-        # 75 de la persona con un margen; para la altura de cabeza (mas es
-        # mejor) el percentil 25 con margen hacia abajo.
-        tilt = _percentile(self._samples["shoulder_tilt"], 75)
-        head = _percentile(self._samples["forward_head"], 75)
-        gap = _percentile(self._samples["neck_gap"], 25)
-
         def clamp(value, default, key):
             low, high = CALIBRATION_BOUNDS[key]
             return max(default * low, min(default * high, value))
 
+        data = self._samples[self.view]
+
+        if self.view == core.VIEW_SIDE:
+            head = _percentile(data["forward_head"], 75)
+            gap = _percentile(data["neck_gap"], 25)
+            lean = _percentile(data["trunk_lean"], 75)
+            suggested = replace(
+                base,
+                # Margen aditivo: de perfil estas medidas pueden ser ~0 o negativas.
+                side_head_forward_max=clamp(head + 0.15, base.side_head_forward_max, "side_head_forward_max"),
+                side_neck_height_min=clamp(gap * 0.90, base.side_neck_height_min, "side_neck_height_min"),
+                side_trunk_lean_max=clamp(lean + 3.0, base.side_trunk_lean_max, "side_trunk_lean_max"),
+            )
+            return suggested, f"Umbrales de perfil ajustados a tu cuerpo y tu cámara ({self.samples} muestras)."
+
+        # Para hombros y cabeza adelantada (menos es mejor) tomamos el percentil
+        # 75 de la persona con un margen; para la altura de cabeza (mas es
+        # mejor) el percentil 25 con margen hacia abajo.
+        tilt = _percentile(data["shoulder_tilt"], 75)
+        head = _percentile(data["forward_head"], 75)
+        gap = _percentile(data["neck_gap"], 25)
         suggested = replace(
             base,
             shoulder_tilt_max=clamp(tilt * 1.15, base.shoulder_tilt_max, "shoulder_tilt_max"),
@@ -187,6 +254,63 @@ class PostureCalibrator:
             neck_compression_min=clamp(gap * 0.90, base.neck_compression_min, "neck_compression_min"),
         )
         return suggested, f"Umbrales ajustados a tu cuerpo y tu cámara ({self.samples} muestras)."
+
+
+# ------------------------------------------- umbrales desde datos etiquetados
+# Con sus propias grabaciones "correcta" (las que se usan para entrenar), los
+# umbrales se pueden fijar a la medida de la camara de esa persona SIN los topes
+# de CALIBRATION_BOUNDS: esos topes protegen de calibrar sobre una postura mala
+# sin saberlo, y aqui la postura la etiqueta el usuario a proposito. Hacen falta:
+# los valores por defecto salian de una camara distinta y, en una webcam de
+# portatil, "cabeza adelantada" de una postura correcta medida 1.0-1.3 contra un
+# umbral de 0.55, asi que la regla marcaba mal TODAS las posturas buenas.
+PERSONAL_MIN_SAMPLES = 20
+PERSONAL_MIN_TILT = 0.05
+
+
+def personal_thresholds(correct_metrics, base=None, view=core.VIEW_FRONT):
+    """Umbrales de UNA vista a partir de metricas de muestras etiquetadas como
+    correctas.
+
+    Devuelve (umbrales, motivo). Si hay pocas muestras devuelve (None, motivo)
+    y no se toca nada. Se cubre el 90% de las posturas buenas del usuario con
+    un margen, igual que la calibracion en vivo pero sin sus topes. Los de la
+    otra vista quedan como estaban en `base`.
+    """
+    base = base or DEFAULT_THRESHOLDS
+    series = {key: [] for key in _VIEW_KEYS[view]}
+    for metrics in correct_metrics:
+        if not metrics or metrics.get("view", core.VIEW_FRONT) != view:
+            continue
+        for key, bucket in series.items():
+            value = metrics.get(key)
+            if value is not None and math.isfinite(value):
+                bucket.append(float(value))
+
+    n = len(series[_VIEW_KEYS[view][0]])
+    if n < PERSONAL_MIN_SAMPLES:
+        return None, (
+            f"Solo hay {n} muestras correctas {view} (hacen falta {PERSONAL_MIN_SAMPLES}); "
+            "dejo esos umbrales como estaban."
+        )
+
+    if view == core.VIEW_SIDE:
+        suggested = replace(
+            base,
+            side_head_forward_max=_percentile(series["forward_head"], 90) + 0.15,
+            side_neck_height_min=_percentile(series["neck_gap"], 10) * 0.90,
+            side_trunk_lean_max=_percentile(series["trunk_lean"], 90) + 3.0,
+        )
+    else:
+        # Las posturas buenas casi no inclinan los hombros (~0.01-0.03), pero un
+        # umbral tan bajo quedaria dentro del temblor de la deteccion.
+        suggested = replace(
+            base,
+            shoulder_tilt_max=max(PERSONAL_MIN_TILT, _percentile(series["shoulder_tilt"], 90) * 1.15),
+            forward_head_max=_percentile(series["forward_head"], 90) * 1.15,
+            neck_compression_min=_percentile(series["neck_gap"], 10) * 0.90,
+        )
+    return suggested, f"Umbrales {view} calculados con {n} muestras correctas."
 
 
 def detect_context(landmarks):
@@ -213,6 +337,13 @@ CONTEXT_LABELS = {
     "de_pie": "De pie",
     "no_determinado": "Piernas no visibles",
 }
+
+
+def scene_label(landmarks):
+    """Texto corto con la vista y el contexto detectados, p. ej. 'De perfil · Sentado'."""
+    view = VIEW_LABELS.get(core.view_of(core.keypoints_from_landmarks(landmarks)))
+    context = CONTEXT_LABELS[detect_context(landmarks)]
+    return " · ".join(filter(None, (view, context)))
 
 
 class SessionStats:

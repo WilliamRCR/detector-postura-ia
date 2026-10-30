@@ -86,9 +86,9 @@ class TestPerfil(unittest.TestCase):
         self.assertIsNone(core.features_from_landmarks(fake_pose.make_profile_landmarks()))
 
     def test_hombros_estrechos_tambien_se_descartan(self):
-        # Hombros visibles pero muy juntos respecto al torso: vista de 3/4.
+        # Hombros muy angostos en el cuadro (persona lejos o casi de lado).
         kp = core.keypoints_from_landmarks(
-            fake_pose.make_landmarks(shoulder_width=0.10, hip_y=0.95)
+            fake_pose.make_landmarks(shoulder_width=0.05, hip_y=0.95)
         )
         self.assertFalse(core.is_frontal(kp))
 

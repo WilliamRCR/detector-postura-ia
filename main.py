@@ -12,7 +12,7 @@ import cv2
 import core
 from config import AppConfig
 from history import SessionHistory
-from posture_metrics import CONTEXT_LABELS, SessionStats, detect_context
+from posture_metrics import SessionStats, scene_label
 from voice_feedback import BreakReminder, DesktopNotifier, PostureVoiceCoach, VoiceFeedback
 
 
@@ -87,11 +87,11 @@ def main():
         if results.pose_landmarks:
             landmarks = results.pose_landmarks.landmark
             is_correct, feedback = predictor.predict(landmarks)
-            context_text = CONTEXT_LABELS[detect_context(landmarks)]
+            context_text = scene_label(landmarks)
             session.record(is_correct, feedback)
 
             if is_correct is None:
-                status = "Ponte de frente"
+                status = "Ubicate de frente o de perfil"
             elif is_correct:
                 status = "CORRECTA"
                 color = (0, 255, 0)

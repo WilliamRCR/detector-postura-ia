@@ -1,11 +1,13 @@
 """Recolecta posturas desde las fotos de dataset/ (camino NO recomendado).
 
-Las fotos de dataset/ son casi todas de perfil, pero la webcam y la app ven al
-usuario de frente: entrenar con ellas hace que el modelo aprenda una vista y se
-use en otra. Por eso ahora este script:
+Las fotos de dataset/ vienen de otras camaras y encuadres, y casi todas son de
+perfil sin saber si la persona esta sentada o de pie. Sirven como complemento,
+pero el dataset principal tiene que ser el que grabas tu con collect_data.py.
+Por eso este script:
 
-- descarta por defecto las fotos que no son frontales (--incluir-perfil las
-  vuelve a incluir, bajo tu responsabilidad);
+- guarda frente y perfil (las dos vistas que usa la app) y descarta por defecto
+  las intermedias (3/4, lejos), que no se pueden medir; --incluir-intermedias
+  las conserva;
 - agrupa por foto original, no por archivo: las 160 fotos "correctas" de
   Roboflow son solo 57 distintas con recortes repetidos, y sin agrupar esas
   copias caen a la vez en entrenamiento y prueba;
@@ -13,8 +15,8 @@ use en otra. Por eso ahora este script:
   collect_data.py.
 
 Uso:
-    python collect_from_images.py                       # solo frontales
-    python collect_from_images.py --incluir-perfil      # todo (no recomendado)
+    python collect_from_images.py                         # frente y perfil
+    python collect_from_images.py --incluir-intermedias   # todo
     python collect_from_images.py --salida mezcla.npz
 """
 import argparse
@@ -47,9 +49,9 @@ def group_name(filename):
     return stem
 
 
-def process_folder(folder_path, label, pose, incluir_perfil=False, verbose=True):
+def process_folder(folder_path, label, pose, incluir_intermedias=False, verbose=True):
     X, y, groups = [], [], []
-    saltadas = {"ilegible": 0, "sin_postura": 0, "perfil": 0, "no_imagen": 0}
+    saltadas = {"ilegible": 0, "sin_postura": 0, "intermedia": 0, "no_imagen": 0}
 
     folder = Path(folder_path)
     if not folder.is_dir():
@@ -86,12 +88,10 @@ def process_folder(folder_path, label, pose, incluir_perfil=False, verbose=True)
                 print(f"[KEYPOINTS INVALIDOS] {path.name}")
             continue
 
-        if not incluir_perfil and not core.is_frontal(kp):
-            saltadas["perfil"] += 1
+        if not incluir_intermedias and core.view_of(kp) == core.VIEW_MIXED:
+            saltadas["intermedia"] += 1
             if verbose:
-                ratio = core.frontality(kp)
-                detalle = f"{ratio:.2f}" if ratio is not None else "n/d"
-                print(f"[DE PERFIL] {path.name}  (hombros/torso = {detalle})")
+                print(f"[INTERMEDIA 3/4 O LEJOS] {path.name}")
             continue
 
         X.append(kp)
@@ -106,9 +106,9 @@ def process_folder(folder_path, label, pose, incluir_perfil=False, verbose=True)
 def main():
     parser = argparse.ArgumentParser(description="Recolecta posturas desde las fotos de dataset/.")
     parser.add_argument(
-        "--incluir-perfil",
+        "--incluir-intermedias",
         action="store_true",
-        help="incluir fotos de perfil (NO recomendado: la app ve al usuario de frente)",
+        help="incluir fotos ni de frente ni de perfil (3/4 o lejos), que no se pueden medir",
     )
     parser.add_argument("--salida", default=DEFAULT_OUTPUT, help=f"archivo .npz de salida (default {DEFAULT_OUTPUT})")
     parser.add_argument("--silencioso", action="store_true", help="no listar foto por foto")
@@ -116,11 +116,9 @@ def main():
 
     print("=== RECOLECCION DESDE IMAGENES ===")
     print(
-        "Recordatorio: el camino recomendado es collect_data.py (webcam, de frente).\n"
-        "Este script existe para inspeccionar las fotos, no para entrenar el modelo final.\n"
+        "Recordatorio: el camino recomendado es collect_data.py (tu webcam, las 4 combinaciones\n"
+        "de frente/perfil x sentado/de pie). Las fotos son un complemento, no el dataset principal.\n"
     )
-    if args.incluir_perfil:
-        print("--incluir-perfil activo: se incluiran fotos de perfil, que la app nunca vera.\n")
 
     pose = core.new_pose(static=True)
 
@@ -128,13 +126,13 @@ def main():
     for folder, label in FOLDERS:
         print(f"--- {folder} (etiqueta {label}) ---")
         X, y, groups, saltadas = process_folder(
-            folder, label, pose, incluir_perfil=args.incluir_perfil, verbose=not args.silencioso
+            folder, label, pose, incluir_intermedias=args.incluir_intermedias, verbose=not args.silencioso
         )
         X_all.extend(X)
         y_all.extend(y)
         groups_all.extend(groups)
         print(
-            f"  usadas {len(X)}  |  de perfil {saltadas['perfil']}  |  "
+            f"  usadas {len(X)}  |  intermedias {saltadas['intermedia']}  |  "
             f"sin postura {saltadas['sin_postura']}  |  ilegibles {saltadas['ilegible']}  |  "
             f"formato no soportado {saltadas['no_imagen']}"
         )
@@ -144,20 +142,24 @@ def main():
         print("No quedo ninguna muestra utilizable. Usa collect_data.py.")
         return
 
+    views_all = [core.view_of(kp) for kp in X_all]
     np.savez(
         args.salida,
         X=np.asarray(X_all, dtype=np.float32),
         y=np.asarray(y_all, dtype=np.int64),
         groups=np.asarray(groups_all, dtype="U96"),
+        views=np.asarray(views_all, dtype="U12"),
+        contexts=np.asarray(["desconocido"] * len(X_all), dtype="U12"),
     )
 
     print("Dataset final:")
     print(f"  muestras: {len(X_all)}")
     print(f"  grupos (fotos originales): {len(set(groups_all))}")
     print(f"  correctas: {sum(1 for v in y_all if v == 1)}, incorrectas: {sum(1 for v in y_all if v == 0)}")
+    print(f"  de frente: {views_all.count(core.VIEW_FRONT)}, de perfil: {views_all.count(core.VIEW_SIDE)}")
     print(f"\nGuardado en {args.salida}")
     print(
-        f"Para entrenar con esto (no recomendado): python train.py --dataset {args.salida}\n"
+        f"Para entrenar solo con esto (no recomendado): python train.py --dataset {args.salida}\n"
         "El modelo que usa la app se entrena con el dataset de collect_data.py."
     )
 

@@ -7,9 +7,18 @@ los modulos solo importa de este archivo.
 """
 import json
 import math
+import warnings
 from pathlib import Path
 
 import numpy as np
+
+# mediapipe 0.10.13 llama a SymbolDatabase.GetPrototype(), que protobuf 4.25
+# marco como obsoleta, y el aviso salia en consola con cada deteccion. No se
+# arregla subiendo ni bajando protobuf (mediapipe exige >=4.25.3,<5), asi que
+# se silencia solo ese mensaje concreto.
+warnings.filterwarnings(
+    "ignore", message=r"SymbolDatabase\.GetPrototype\(\) is deprecated", category=UserWarning
+)
 
 MODEL_FILE = "modelo_postura.pkl"
 SCALER_FILE = "scaler.pkl"
@@ -21,7 +30,7 @@ RAW_SIZE = NUM_LANDMARKS * 3  # 99 valores crudos (x, y, z por punto)
 
 # Version del formato de caracteristicas. Si cambia, un modelo viejo ya no
 # sirve y hay que volver a entrenar: por eso se guarda junto al .pkl.
-FEATURE_VERSION = 2
+FEATURE_VERSION = 3
 
 # Indices de MediaPipe Pose que usamos por nombre.
 NOSE = 0
@@ -40,14 +49,21 @@ MIN_SHOULDER_WIDTH = 0.03
 COORD_CLIP = 6.0
 
 EXTRA_FEATURE_NAMES = (
+    # solo de frente (en perfil valen 0)
     "shoulder_tilt",
     "forward_head",
     "neck_gap",
+    # solo de perfil (de frente valen 0)
+    "side_forward_head",
+    "side_neck_gap",
+    "side_trunk_lean",
+    # comunes a las dos vistas
     "torso_ratio",
     "neck_angle",
     "torso_angle",
     "head_tilt",
     "shoulder_line_angle",
+    "is_profile",
 )
 
 NUM_FEATURES = RAW_SIZE + len(EXTRA_FEATURE_NAMES)
@@ -126,8 +142,10 @@ def body_frame(kp):
 
 
 def frontality(kp):
-    """Ancho de hombros / largo de torso. De frente ronda 0.7-1.2; de perfil los
-    hombros se juntan y baja mucho. Devuelve None si no se puede medir."""
+    """Ancho de hombros / largo de torso. Solo informativo: ya NO decide la
+    vista, porque depende de las caderas y con una webcam de portatil (cuerpo
+    cortado a la cintura) MediaPipe las inventa. Devuelve None si no se puede
+    medir."""
     frame = body_frame(kp)
     if frame is None:
         return None
@@ -135,18 +153,177 @@ def frontality(kp):
     return shoulder_width / torso_length
 
 
-FRONTAL_MIN_RATIO = 0.55
+# ------------------------------------------------------------------- vistas
+# El detector se usa de FRENTE y de PERFIL, sentado o de pie. Cada vista se
+# mide distinto (de perfil los hombros se superponen y el ancho de hombros no
+# sirve como escala), asi que primero se decide en cual vista esta la muestra.
+VIEW_FRONT = "frente"
+VIEW_SIDE = "perfil"
+VIEW_MIXED = "intermedia"  # 3/4, lejos o girando: no se mide, se pide reubicarse
+VIEWS = (VIEW_FRONT, VIEW_SIDE)
+
+UNMEASURABLE_MESSAGE = "Ubícate de frente o de perfil a la cámara"
+
+UNKNOWN_CONTEXT = "desconocido"  # fotos antiguas y datasets sin contexto
 
 
-def is_frontal(kp, min_ratio=FRONTAL_MIN_RATIO):
-    """True si la muestra parece tomada de frente (no de perfil)."""
-    ratio = frontality(kp)
-    return ratio is not None and ratio >= min_ratio
+def context_from_group(group):
+    """Contexto (sentado / de_pie / mixto) que lleva al final el nombre de una
+    sesion grabada con collect_data.py, p. ej. 20261028_212539_correcta_sentado.
+    Los datasets grabados antes de guardar el contexto solo lo tienen ahi."""
+    for context in ("sentado", "de_pie", "mixto"):
+        if str(group).endswith("_" + context):
+            return context
+    return UNKNOWN_CONTEXT
+
+# De frente (solo cabeza y hombros, que es lo que ve una webcam de portatil).
+# Medido con grabaciones de webcam y con las fotos del repo: la webcam queda en
+# nariz<=0.05, ancho>=0.31, dz<=0.44 y las fotos de perfil en nariz>=0.41,
+# ancho<=0.13, dz>=3.7, con mucho margen a cada lado. El criterio anterior
+# (hombros/torso >= 0.55) tiraba la mitad de las muestras reales de webcam.
+FRONTAL_MIN_SHOULDER_WIDTH = 0.08  # fraccion del ancho del cuadro
+FRONTAL_MAX_NOSE_OFFSET = 0.30     # |nariz - centro de orejas| / ancho de hombros
+FRONTAL_MAX_DEPTH_DIFF = 1.5       # |z hombro izq - z hombro der| / ancho de hombros
+
+# De perfil: la nariz sale del eje de las orejas y los hombros se estrechan.
+# Medidas relativas a la altura del cuello (oreja-hombro), que casi no cambia
+# con la vista: webcam de frente nariz<=0.07; fotos de perfil nariz>=0.36.
+SIDE_MIN_NOSE_OFFSET = 0.20        # |nariz - centro de orejas| / altura del cuello (de frente <=0.07)
+SIDE_MAX_SHOULDER_RATIO = 1.0      # ancho de hombros / altura del cuello (de frente ~1.4)
+MIN_NECK_HEIGHT = 0.02             # altura del cuello minima para poder medir
+MIN_HEAD_SIZE = 0.015              # distancia nariz-oreja minima (escala de perfil)
+
+
+def frontal_measures(kp):
+    """Las tres medidas del criterio de frente, o None si no se pueden tomar."""
+    pts = _as_points(kp)
+    width = math.hypot(
+        pts[SHOULDER_L][0] - pts[SHOULDER_R][0], pts[SHOULDER_L][1] - pts[SHOULDER_R][1]
+    )
+    if width < MIN_SHOULDER_WIDTH:
+        return None
+    mid_ear_x = (pts[EAR_L][0] + pts[EAR_R][0]) / 2.0
+    return {
+        "shoulder_width": width,
+        "nose_offset": abs(pts[NOSE][0] - mid_ear_x) / width,
+        "depth_diff": abs(pts[SHOULDER_L][2] - pts[SHOULDER_R][2]) / width,
+    }
+
+
+def side_measures(kp):
+    """Las medidas del criterio de perfil, o None si no se pueden tomar."""
+    pts = _as_points(kp)
+    mid_ear = (pts[EAR_L] + pts[EAR_R]) / 2.0
+    mid_shoulder = (pts[SHOULDER_L] + pts[SHOULDER_R]) / 2.0
+    neck_height = abs(mid_shoulder[1] - mid_ear[1])
+    if neck_height < MIN_NECK_HEIGHT:
+        return None
+    width = math.hypot(
+        pts[SHOULDER_L][0] - pts[SHOULDER_R][0], pts[SHOULDER_L][1] - pts[SHOULDER_R][1]
+    )
+    return {
+        "nose_offset": abs(pts[NOSE][0] - mid_ear[0]) / neck_height,
+        "shoulder_ratio": width / neck_height,
+    }
+
+
+def is_frontal(kp):
+    """True si la muestra parece tomada de frente (no de perfil ni de 3/4)."""
+    m = frontal_measures(kp)
+    return (
+        m is not None
+        and m["shoulder_width"] >= FRONTAL_MIN_SHOULDER_WIDTH
+        and m["nose_offset"] <= FRONTAL_MAX_NOSE_OFFSET
+        and m["depth_diff"] <= FRONTAL_MAX_DEPTH_DIFF
+    )
+
+
+def is_profile(kp):
+    """True si la muestra parece tomada de perfil."""
+    m = side_measures(kp)
+    return (
+        m is not None
+        and m["nose_offset"] >= SIDE_MIN_NOSE_OFFSET
+        and m["shoulder_ratio"] <= SIDE_MAX_SHOULDER_RATIO
+    )
+
+
+def view_of(kp):
+    """'frente', 'perfil' o 'intermedia' (3/4, lejos o girando)."""
+    if is_frontal(kp):
+        return VIEW_FRONT
+    if is_profile(kp):
+        return VIEW_SIDE
+    return VIEW_MIXED
+
+
+def side_canonical(kp):
+    """Una muestra de perfil siempre se mide mirando hacia +x: si mira hacia la
+    izquierda se espeja (con intercambio de lados), asi da igual hacia donde
+    mire la persona y cual hombro tenga cerca de la camara."""
+    pts = _as_points(kp)
+    mid_ear_x = (pts[EAR_L][0] + pts[EAR_R][0]) / 2.0
+    if pts[NOSE][0] < mid_ear_x:
+        return mirror_keypoints(kp)
+    return np.asarray(kp, dtype=np.float32)
+
+
+def _side_scale(pts):
+    """Escala de perfil: tamano de la cabeza (nariz-oreja). A diferencia del
+    ancho de hombros, no se colapsa de perfil ni cambia con la postura."""
+    mid_ear = (pts[EAR_L] + pts[EAR_R]) / 2.0
+    head = math.hypot(pts[NOSE][0] - mid_ear[0], pts[NOSE][1] - mid_ear[1])
+    return head if head >= MIN_HEAD_SIZE else None
+
+
+def body_scale(kp):
+    """Tamano de referencia de la muestra (ancho de hombros de frente, tamano de
+    la cabeza de perfil), o None si no es medible. Sirve para escalar el ruido
+    del aumento de datos a cada vista."""
+    view = view_of(kp)
+    if view == VIEW_FRONT:
+        frame = body_frame(kp)
+        return None if frame is None else frame[1]
+    if view == VIEW_SIDE:
+        return _side_scale(_as_points(side_canonical(kp)))
+    return None
+
+
+def _side_metrics(kp):
+    pts = _as_points(side_canonical(kp))
+    scale = _side_scale(pts)
+    if scale is None:
+        return None
+    mid_ear = (pts[EAR_L] + pts[EAR_R]) / 2.0
+    mid_shoulder = (pts[SHOULDER_L] + pts[SHOULDER_R]) / 2.0
+    mid_hip = (pts[HIP_L] + pts[HIP_R]) / 2.0
+    neck_height = max(abs(mid_shoulder[1] - mid_ear[1]), 1e-6)
+    torso_dy = max(abs(mid_hip[1] - mid_shoulder[1]), 1e-6)
+    return {
+        "view": VIEW_SIDE,
+        # oreja por delante del hombro, relativo a la altura del cuello
+        "forward_head": (mid_ear[0] - mid_shoulder[0]) / neck_height,
+        # altura de la cabeza sobre el hombro, en tamanos de cabeza
+        "neck_gap": (mid_shoulder[1] - mid_ear[1]) / scale,
+        # grados que el hombro queda por delante de la cadera (+ = encorvado hacia delante)
+        "trunk_lean": math.degrees(math.atan2(mid_shoulder[0] - mid_hip[0], torso_dy)),
+    }
 
 
 def metrics_from_keypoints(kp):
-    """Razones de postura normalizadas por el tamano del cuerpo, o None si no
-    se puede medir. Unica implementacion: posture_metrics la reutiliza."""
+    """Medidas de postura de la vista que corresponda, o None si la muestra no
+    se puede medir (3/4, muy lejos o deteccion mala). Incluye 'view'.
+
+    De frente: shoulder_tilt, forward_head, neck_gap (normalizadas por ancho de
+    hombros / largo de torso). De perfil: forward_head, neck_gap, trunk_lean.
+    Unica implementacion: posture_metrics la reutiliza.
+    """
+    view = view_of(kp)
+    if view == VIEW_SIDE:
+        return _side_metrics(kp)
+    if view != VIEW_FRONT:
+        return None
+
     frame = body_frame(kp)
     if frame is None:
         return None
@@ -159,6 +336,7 @@ def metrics_from_keypoints(kp):
     mid_ear = (le + re) / 2.0
 
     return {
+        "view": VIEW_FRONT,
         "shoulder_tilt": abs(ls[1] - rs[1]) / shoulder_width,
         "forward_head": (ls[2] - nose[2]) / shoulder_width,
         "neck_gap": abs(mid_ear[1] - mid_shoulder[1]) / torso_length,
@@ -170,29 +348,42 @@ def features_from_keypoints(kp):
     """Vector de caracteristicas listo para el modelo, o None si la muestra no
     es medible.
 
-    Antes el modelo recibia las 99 coordenadas crudas: si te movias o te
-    acercabas a la camara cambiaban todos los numeros aunque la postura fuera
-    la misma. Aqui los puntos se centran en el medio de los hombros, se dividen
-    entre el ancho de hombros (asi la escala deja de importar) y se agregan
-    angulos de cuello y torso.
+    Los puntos se centran en el medio de los hombros y se dividen entre la
+    escala de la vista (ancho de hombros de frente, tamano de la cabeza de
+    perfil), asi acercarse a la camara o moverse en el cuadro no cambia nada.
+    Se agregan medidas propias de cada vista (las de la otra valen 0), angulos
+    de cuello y torso, y un indicador de vista.
     """
-    frame = body_frame(kp)
-    if frame is None:
+    view = view_of(kp)
+    if view not in VIEWS:
+        return None
+    metrics = metrics_from_keypoints(kp)
+    if metrics is None:
         return None
 
-    pts = _as_points(kp)
-    mid_shoulder, shoulder_width, torso_length = frame
+    if view == VIEW_SIDE:
+        kp = side_canonical(kp)
+        pts = _as_points(kp)
+        scale = _side_scale(pts)
+        mid_shoulder = (pts[SHOULDER_L] + pts[SHOULDER_R]) / 2.0
+        mid_hip = (pts[HIP_L] + pts[HIP_R]) / 2.0
+        torso_length = abs(mid_hip[1] - mid_shoulder[1])
+        if torso_length < 0.03:
+            torso_length = scale * 4.0  # respaldo si no se ven las caderas
+    else:
+        frame = body_frame(kp)
+        if frame is None:
+            return None
+        pts = _as_points(kp)
+        mid_shoulder, scale, torso_length = frame
 
-    normalized = (pts - mid_shoulder) / shoulder_width
+    normalized = (pts - mid_shoulder) / scale
     normalized = np.clip(normalized, -COORD_CLIP, COORD_CLIP)
 
-    ls, rs = pts[SHOULDER_L], pts[SHOULDER_R]
-    lh, rh = pts[HIP_L], pts[HIP_R]
+    rs, ls = pts[SHOULDER_R], pts[SHOULDER_L]
     le, re = pts[EAR_L], pts[EAR_R]
-    mid_hip = (lh + rh) / 2.0
+    mid_hip = (pts[HIP_L] + pts[HIP_R]) / 2.0
     mid_ear = (le + re) / 2.0
-
-    metrics = metrics_from_keypoints(kp)
 
     # Angulo del cuello: oreja - hombro - cadera. 180 = cabeza alineada con el
     # torso; menos = cabeza caida hacia adelante o hacia un lado.
@@ -204,19 +395,27 @@ def features_from_keypoints(kp):
     torso_vec = mid_hip - mid_shoulder
     torso_angle = 90.0 - _vector_angle_to_horizontal(torso_vec)
 
-    head_tilt = _vector_angle_to_horizontal(re - le)
-    shoulder_line_angle = _vector_angle_to_horizontal(rs - ls)
+    if view == VIEW_SIDE:
+        # De perfil las orejas y los hombros se superponen: sus angulos son ruido.
+        head_tilt = shoulder_line_angle = 0.0
+        front = (0.0, 0.0, 0.0)
+        side = (metrics["forward_head"], metrics["neck_gap"], metrics["trunk_lean"] / 45.0)
+    else:
+        head_tilt = _vector_angle_to_horizontal(re - le)
+        shoulder_line_angle = _vector_angle_to_horizontal(rs - ls)
+        front = (metrics["shoulder_tilt"], metrics["forward_head"], metrics["neck_gap"])
+        side = (0.0, 0.0, 0.0)
 
     extras = np.array(
         [
-            metrics["shoulder_tilt"],
-            metrics["forward_head"],
-            metrics["neck_gap"],
-            torso_length / shoulder_width,
+            *front,
+            *side,
+            torso_length / scale,
             neck_angle / 180.0,
             torso_angle / 90.0,
             head_tilt / 90.0,
             shoulder_line_angle / 90.0,
+            1.0 if view == VIEW_SIDE else 0.0,
         ],
         dtype=np.float64,
     )
@@ -273,6 +472,16 @@ def jitter_keypoints(kp, std=0.01, rng=None):
     arr = np.asarray(kp, dtype=np.float32).reshape(-1)
     rng = rng or np.random.default_rng()
     return (arr + rng.normal(0, std, size=arr.shape)).astype(np.float32)
+
+
+def jitter_relative(kp, rel=0.03, rng=None):
+    """Ruido leve proporcional al tamano de la muestra (ancho de hombros de
+    frente, cabeza de perfil). Un ruido absoluto de 0.01 era ~3% del ancho de
+    hombros de frente pero ~15% del tamano de la cabeza de perfil, y borraba la
+    senal de cabeza adelantada."""
+    scale = body_scale(kp)
+    std = rel * scale if scale else 0.005
+    return jitter_keypoints(kp, std=std, rng=rng)
 
 
 # ------------------------------------------------------------------ modelo
@@ -363,7 +572,7 @@ class PosturePredictor:
         raw = self.predict_from_keypoints(kp)
         if raw is None:
             self.reset()
-            return None, "Ubícate de frente a la cámara"
+            return None, UNMEASURABLE_MESSAGE
         is_correct = self._status.update(raw) == 1
         feedback = self._feedback.update(evaluate_posture(landmarks, self.thresholds))
         return is_correct, feedback

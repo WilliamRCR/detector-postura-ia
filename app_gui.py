@@ -14,13 +14,13 @@ from PIL import Image, ImageTk
 
 import core
 from assessment import PostureAssessment
-from config import AppConfig
+from config import THRESHOLD_KEYS, AppConfig
 from history import SessionHistory
 from posture_metrics import (
-    CONTEXT_LABELS,
     SessionStats,
     detect_context,
     evaluate_aspects,
+    scene_label,
     summarize_aspects,
 )
 from voice_feedback import BreakReminder, DesktopNotifier, PostureVoiceCoach, VoiceFeedback
@@ -511,6 +511,11 @@ class PostureApp:
         row("Cabeza adelantada máx.", "forward_head_max", "float")
         row("Altura de cabeza mín.", "neck_compression_min", "float")
 
+        title("Umbrales de perfil")
+        row("Espalda inclinada máx. (°)", "side_trunk_lean_max", "float", hint="grados")
+        row("Cabeza adelantada máx.", "side_head_forward_max", "float", hint="oreja vs hombro")
+        row("Altura de cabeza mín.", "side_neck_height_min", "float", hint="en tamaños de cabeza")
+
         title("Otros")
         row("Duración evaluación (s)", "assessment_seconds", "float")
         row("Modo privacidad", "privacy_mode", "bool")
@@ -551,8 +556,7 @@ class PostureApp:
             self.settings_msg.set(error)
             return
         # Un cambio manual de umbrales deja de ser una calibracion automatica.
-        if any(self.cfg[key] != values.get(key, self.cfg[key]) for key in
-               ("shoulder_tilt_max", "forward_head_max", "neck_compression_min")):
+        if any(self.cfg[key] != values.get(key, self.cfg[key]) for key in THRESHOLD_KEYS):
             values["calibrated"] = False
         camara_cambio = int(values.get("camera_index", self.cfg.camera_index)) != self.cfg.camera_index
         self.cfg.update(values)
@@ -769,7 +773,7 @@ class PostureApp:
                 landmarks = results.pose_landmarks.landmark
                 is_correct, raw_feedback = self.predictor.predict(landmarks)
                 context = detect_context(landmarks)
-                context_text = CONTEXT_LABELS[context]
+                context_text = scene_label(landmarks)
                 aspects = evaluate_aspects(landmarks, self.cfg.thresholds())
                 metrics = core.metrics_from_keypoints(core.keypoints_from_landmarks(landmarks))
                 self.assessment.record(is_correct, raw_feedback, context, aspects, metrics)
@@ -802,11 +806,11 @@ class PostureApp:
             # --- Fase 3: coaching continuo (comportamiento normal) ---
             landmarks = results.pose_landmarks.landmark
             is_correct, feedback_text = self.predictor.predict(landmarks)
-            context_text = CONTEXT_LABELS[detect_context(landmarks)]
+            context_text = scene_label(landmarks)
             self.session.record(is_correct, feedback_text)
 
             if is_correct is None:
-                status_text = "Estado:  Ponte de frente a la cámara"
+                status_text = "Estado:  Ubícate de frente o de perfil"
                 bg_color = ACCENT_COLOR
             elif is_correct:
                 status_text = "Estado:  CORRECTA  ✓"
