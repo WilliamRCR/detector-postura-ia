@@ -7,7 +7,7 @@ hablar solo cuando la mala postura dura de verdad.
 import unittest
 
 from smoothing import MajorityVoteSmoother, SustainedStateTimer
-from voice_feedback import BreakReminder, PostureVoiceCoach
+from voice_feedback import BreakReminder, DesktopNotifier, PostureVoiceCoach
 
 
 class VoiceSpy:
@@ -85,6 +85,22 @@ class TestSustainedStateTimer(unittest.TestCase):
         self.assertIsNone(timer.update(None, now=3.0))
         self.assertEqual(timer.update(False, now=5.0), "alert")
 
+    def test_mucho_tiempo_sin_medir_cierra_el_episodio(self):
+        """1 frame malo + 5 minutos a 45 grados + otro frame malo no son 5
+        minutos de mala postura."""
+        timer = SustainedStateTimer(min_seconds=6.0)
+        timer.update(False, now=0.0)
+        timer.update(None, now=300.0)
+        self.assertIsNone(timer.update(False, now=300.1))
+        self.assertEqual(timer.update(False, now=306.5), "alert")
+
+    def test_tampoco_felicita_tras_mucho_tiempo_sin_medir(self):
+        timer = SustainedStateTimer(min_seconds=5.0)
+        timer.update(False, now=0.0)
+        self.assertEqual(timer.update(False, now=6.0), "alert")
+        self.assertIsNone(timer.update(True, now=120.0))
+        self.assertFalse(timer.was_bad)
+
     def test_reset_limpia_todo(self):
         timer = SustainedStateTimer(min_seconds=5.0)
         timer.update(False, now=0.0)
@@ -133,6 +149,33 @@ class TestPostureVoiceCoach(unittest.TestCase):
         coach.update(False, "Endereza los hombros", now=0.0)
         coach.update(False, "Endereza los hombros", now=3.0)
         self.assertEqual(len(voice.said), 1)
+
+
+class TestDesktopNotifier(unittest.TestCase):
+    def _notificador(self, enabled=True):
+        notificador = DesktopNotifier(enabled=enabled, cooldown=0.0)
+        notificador._notify = lambda **_k: None
+        return notificador
+
+    def test_se_puede_activar_despues_de_arrancar_apagado(self):
+        notificador = self._notificador(enabled=False)
+        self.assertTrue(notificador.available)
+        notificador.set_enabled(True)
+        self.assertTrue(notificador.enabled)
+        self.assertTrue(notificador.notify("t", "m"))
+
+    def test_un_error_suelto_no_las_apaga(self):
+        notificador = self._notificador()
+
+        def falla(**_k):
+            raise OSError("sin bandeja")
+
+        notificador._notify = falla
+        for _ in range(DesktopNotifier.MAX_FAILURES - 1):
+            self.assertFalse(notificador.notify("t", "m", force=True))
+            self.assertTrue(notificador.enabled)
+        self.assertFalse(notificador.notify("t", "m", force=True))
+        self.assertFalse(notificador.enabled)
 
 
 class TestBreakReminder(unittest.TestCase):

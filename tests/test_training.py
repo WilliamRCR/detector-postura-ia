@@ -6,11 +6,21 @@ Contexto medido con una webcam de portatil: el criterio viejo (hombros/torso
 fotos de perfil daba 'correcta' al 100% de las grabaciones y, con los umbrales
 por defecto, la regla de cabeza adelantada marcaba mal TODAS las posturas buenas.
 """
+import json
+import os
+import sys
+import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from unittest import mock
 
 import numpy as np
 
+import collect_data
 import core
+import train
+from config import AppConfig
 from posture_metrics import PERSONAL_MIN_SAMPLES, PERSONAL_MIN_TILT, personal_thresholds
 from tests import fake_pose
 
@@ -80,6 +90,74 @@ class TestUmbralesPersonales(unittest.TestCase):
         lote = self._metricas(30) + [None, None, None]
         umbrales, _ = personal_thresholds(lote)
         self.assertIsNotNone(umbrales)
+
+
+class TestEntrenamientoCompleto(unittest.TestCase):
+    """train.py de punta a punta con una pasada de 1-GRABAR-DATOS.bat: 8 sesiones,
+    una por cada situacion y clase. Dos de ellas quedan en la prueba, y antes el
+    modelo guardado nunca las veia."""
+
+    POSES = {
+        ("frente", 1): lambda rng: fake_pose.make_landmarks(
+            ear_gap=rng.uniform(0.11, 0.13), shoulder_tilt=rng.uniform(0, 0.01), center_x=rng.uniform(0.45, 0.55)),
+        ("frente", 0): lambda rng: fake_pose.make_landmarks(
+            ear_gap=rng.uniform(0.03, 0.05), shoulder_tilt=rng.uniform(0.09, 0.11), head_forward=0.25,
+            center_x=rng.uniform(0.45, 0.55)),
+        ("perfil", 1): lambda rng: fake_pose.make_side_landmarks(
+            ear_forward=rng.uniform(0, 0.03), ear_gap=rng.uniform(0.11, 0.13), trunk_lean_deg=rng.uniform(0, 6)),
+        ("perfil", 0): lambda rng: fake_pose.make_side_landmarks(
+            ear_forward=rng.uniform(0.09, 0.12), ear_gap=rng.uniform(0.06, 0.08), trunk_lean_deg=rng.uniform(18, 25)),
+    }
+
+    def setUp(self):
+        self._previo = os.getcwd()
+        self._dir = tempfile.TemporaryDirectory()
+        os.chdir(self._dir.name)
+
+    def tearDown(self):
+        os.chdir(self._previo)
+        self._dir.cleanup()
+
+    def _grabar(self):
+        rng = np.random.default_rng(11)
+        X, y, groups, views, contexts = [], [], [], [], []
+        for view in core.VIEWS:
+            for context in train.CONTEXTS:
+                for label in (1, 0):
+                    for _ in range(30):
+                        X.append(kp_de(self.POSES[(view, label)](rng)))
+                        y.append(label)
+                        groups.append(f"s_{view}_{context}_{label}")
+                        views.append(view)
+                        contexts.append(context)
+        collect_data.save_dataset(X, y, groups, views, contexts)
+
+    def _entrenar(self):
+        with mock.patch.object(sys, "argv", ["train.py"]), redirect_stdout(StringIO()) as salida:
+            train.main()
+        return salida.getvalue()
+
+    def test_el_modelo_final_aprende_tambien_las_sesiones_de_prueba(self):
+        self._grabar()
+        salida = self._entrenar()
+        self.assertIn("modelo final", salida)
+        with open(core.META_FILE, encoding="utf-8") as f:
+            meta = json.load(f)
+        self.assertGreater(meta["n_final"], meta["n_train"])
+
+        modelo, scaler, _ = core.load_model()
+        rng = np.random.default_rng(23)
+        for (view, label), pose in self.POSES.items():
+            feats = np.vstack([core.features_from_landmarks(pose(rng)) for _ in range(10)])
+            self.assertTrue(np.all(modelo.predict(scaler.transform(feats)) == label), (view, label))
+
+    def test_los_umbrales_de_train_quedan_como_referencia(self):
+        self._grabar()
+        self._entrenar()
+        cfg = AppConfig.load()
+        self.assertTrue(cfg.calibrated)
+        self.assertEqual(cfg.anchor_thresholds(), cfg.thresholds())
+        self.assertNotEqual(cfg.anchor_thresholds().forward_head_max, 0.55)
 
 
 if __name__ == "__main__":

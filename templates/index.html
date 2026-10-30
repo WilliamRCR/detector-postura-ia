@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Detector de Postura IA</title>
+  <title>PosturIA</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -277,7 +277,7 @@
 <body>
 
 <header>
-  <h1>DETECTOR DE POSTURA &nbsp; IA</h1>
+  <h1>PosturIA</h1>
   <p>MediaPipe &nbsp;+&nbsp; scikit-learn &nbsp;|&nbsp; Tiempo real</p>
 </header>
 
@@ -377,7 +377,7 @@
 
 </div>
 
-<footer>Detector de Postura IA &mdash; localhost:5000</footer>
+<footer>PosturIA &mdash; localhost:5000</footer>
 
 <script>
   let streamStarted = false;
@@ -684,8 +684,8 @@
   async function saveSettings() {
     const payload = {};
     document.querySelectorAll('#settingsList input').forEach(input => {
-      payload[input.dataset.key] =
-        input.dataset.kind === 'bool' ? input.checked : parseFloat(input.value);
+      const value = input.dataset.kind === 'bool' ? input.checked : parseFloat(input.value);
+      if (!Number.isNaN(value)) payload[input.dataset.key] = value;  // en blanco = sin cambios
     });
 
     const res = await fetch('/api/config', {
@@ -695,6 +695,7 @@
     });
     const data = await res.json();
 
+    await loadSettings();  // muestra lo guardado (los valores fuera de rango se recortan)
     const msg = document.getElementById('settingsMsg');
     msg.textContent = data.aviso ? 'Guardado. ' + data.aviso : 'Guardado en config.json.';
     setTimeout(() => { msg.textContent = ''; }, 5000);

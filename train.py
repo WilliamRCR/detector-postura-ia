@@ -17,6 +17,10 @@ Dos cosas que antes inflaban la precision y ya no:
 
 Ademas se reporta matriz de confusion y precision/recall por clase, no solo
 accuracy, que con clases desbalanceadas dice poco.
+
+La division sirve para MEDIR. El modelo que se guarda se vuelve a entrenar con
+todas las sesiones: dejar fuera las de prueba le quitaba a la app situaciones
+enteras (con 8 grabaciones, dos de las ocho combinaciones nunca se aprendian).
 """
 import argparse
 from collections import Counter
@@ -159,20 +163,25 @@ def split_by_group(X, y, groups, test_size=0.25):
 def print_coverage(y, views, contexts, groups):
     """Cuantas muestras hay en cada una de las 4 situaciones (vista x contexto)
     y de que combinaciones faltan datos. Devuelve la lista de faltantes."""
-    print("\nCobertura del dataset (muestras correctas / incorrectas, sesiones):")
-    print(f"  {'':22s}{'correctas':>10s}{'incorrectas':>13s}{'sesiones':>10s}")
+    print("\nCobertura del dataset (muestras y sesiones de cada clase):")
+    print(f"  {'':22s}{'correctas':>10s}{'incorrectas':>13s}{'ses. correctas':>16s}{'ses. incorrectas':>18s}")
     faltan = []
     for view in core.VIEWS:
         for context in CONTEXTS:
             mask = (views == view) & (contexts == context)
-            good = int(np.sum(y[mask] == 1))
-            bad = int(np.sum(y[mask] == 0))
-            sessions = len(set(groups[mask]))
-            print(f"  {view + ' / ' + context:22s}{good:>10d}{bad:>13d}{sessions:>10d}")
+            good_mask = mask & (y == 1)
+            bad_mask = mask & (y == 0)
+            good = int(good_mask.sum())
+            bad = int(bad_mask.sum())
+            good_sessions = len(set(groups[good_mask]))
+            bad_sessions = len(set(groups[bad_mask]))
+            print(f"  {view + ' / ' + context:22s}{good:>10d}{bad:>13d}{good_sessions:>16d}{bad_sessions:>18d}")
             if good == 0 or bad == 0:
                 faltan.append(f"{context} de {view}: sin muestras " + ("correctas" if good == 0 else "incorrectas"))
-            elif min(good, bad) < MIN_PER_CELL or sessions < 2:
-                faltan.append(f"{context} de {view}: pocas muestras o una sola sesion")
+            elif min(good, bad) < MIN_PER_CELL or min(good_sessions, bad_sessions) < 2:
+                # Por clase: una correcta + una incorrecta son 2 sesiones, pero
+                # si la correcta queda en la prueba no hay con que medirla.
+                faltan.append(f"{context} de {view}: pocas muestras o una sola sesion por clase")
 
     otras = {}
     for view in core.VIEWS:
@@ -230,7 +239,7 @@ def save_personal_thresholds(X_raw, y, contexts):
 
     if not cambio:
         return False
-    cfg.set_thresholds(thresholds)
+    cfg.set_thresholds(thresholds, anchor=True)
     print("  (guardados en config.json)")
 
     def marca_mal(m):
@@ -253,6 +262,32 @@ def save_personal_thresholds(X_raw, y, contexts):
                 share = sum(marca_mal(m) for m in medibles) / len(medibles)
                 print(f"  [{view}] las reglas marcan como mala postura el {share:.0%} de tus {nombre}")
     return True
+
+
+def fit_model(X_raw, y, groups, rng, aumentar=True):
+    """Aumenta, normaliza y entrena. Devuelve (modelo, scaler, X_escalado, y)
+    con lo que realmente se uso, o None si no quedo ninguna muestra medible."""
+    if aumentar:
+        X_raw, y, groups = augment(X_raw, y, groups, rng)
+    X, keep = core.features_matrix(X_raw)
+    y = y[keep]
+    if len(X) == 0:
+        return None
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    usar_early_stopping = len(X) >= 40 and np.min(np.bincount(y)) >= 10
+    model = MLPClassifier(
+        hidden_layer_sizes=(128, 64, 32),
+        activation="relu",
+        solver="adam",
+        max_iter=1000,
+        early_stopping=usar_early_stopping,
+        validation_fraction=0.1,
+        random_state=RANDOM_STATE,
+    )
+    model.fit(X_scaled, y)
+    return model, scaler, X_scaled, y
 
 
 def main():
@@ -335,52 +370,27 @@ def main():
             "            Graba mas sesiones variadas para que el reparto sea parejo."
         )
 
+    # --- 2. Caracteristicas normalizadas y red de evaluacion ---
     rng = np.random.default_rng(RANDOM_STATE)
-    if not args.sin_aumento:
-        before = len(X_train_raw)
-        X_train_raw, y_train, g_train = augment(X_train_raw, y_train, g_train, rng)
-        print(f"\nAumento solo en entrenamiento: {before} -> {len(X_train_raw)} muestras.")
-
-    # --- 2. Caracteristicas normalizadas ---
-    X_train, keep_train = core.features_matrix(X_train_raw)
     X_test, keep_test = core.features_matrix(X_test_raw)
-    y_train = y_train[keep_train]
     y_test = y_test[keep_test]
     v_test = v_test[keep_test]
 
-    descartadas = (len(X_train_raw) - len(keep_train)) + (len(X_test_raw) - len(keep_test))
-    if descartadas:
-        print(f"Descartadas {descartadas} muestras no medibles tras normalizar.")
-
-    if len(X_train) == 0 or len(X_test) == 0:
+    print("\nEntrenando red neuronal para medirla...")
+    ajuste = fit_model(X_train_raw, y_train, g_train, rng, aumentar=not args.sin_aumento)
+    if ajuste is None or len(X_test) == 0:
         raise SystemExit(
             "Error: no quedaron muestras utiles tras normalizar. Revisa que las "
             "grabaciones sean de frente o de perfil a la camara."
         )
+    model, scaler, X_train_scaled, y_train = ajuste
+    X_test_scaled = scaler.transform(X_test)
 
     describe("Entrenamiento", y_train)
     describe("Prueba       ", y_test)
-    print(f"Caracteristicas por muestra: {X_train.shape[1]} (antes eran {core.RAW_SIZE} crudas)")
+    print(f"Caracteristicas por muestra: {X_train_scaled.shape[1]} (antes eran {core.RAW_SIZE} crudas)")
 
-    # --- 3. Entrenar ---
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
-
-    print("\nEntrenando red neuronal...")
-    usar_early_stopping = len(X_train) >= 40 and np.min(np.bincount(y_train)) >= 10
-    model = MLPClassifier(
-        hidden_layer_sizes=(128, 64, 32),
-        activation="relu",
-        solver="adam",
-        max_iter=1000,
-        early_stopping=usar_early_stopping,
-        validation_fraction=0.1,
-        random_state=RANDOM_STATE,
-    )
-    model.fit(X_train_scaled, y_train)
-
-    # --- 4. Reportar de verdad ---
+    # --- 3. Reportar de verdad ---
     train_acc = model.score(X_train_scaled, y_train)
     test_acc = model.score(X_test_scaled, y_test)
     y_pred = model.predict(X_test_scaled)
@@ -423,14 +433,23 @@ def main():
             "            El modelo se esta memorizando: graba mas variedad de sesiones."
         )
 
+    # --- 4. Modelo final con TODAS las sesiones ---
+    print("\nEntrenando el modelo final con todas las sesiones (entrenamiento + prueba)...")
+    final_model, final_scaler, X_final, y_final = fit_model(
+        X_raw, y, groups, rng, aumentar=not args.sin_aumento
+    )
+    describe("Modelo final ", y_final)
+    print("La precision de arriba mide sesiones que la red no vio; el modelo final si las aprende.")
+
     core.save_model(
-        model,
-        scaler,
+        final_model,
+        final_scaler,
         meta={
             "test_accuracy": round(float(test_acc), 4),
             "train_accuracy": round(float(train_acc), 4),
-            "n_train": int(len(X_train)),
+            "n_train": int(len(X_train_scaled)),
             "n_test": int(len(X_test)),
+            "n_final": int(len(X_final)),
             "n_grupos": int(len(np.unique(groups))),
             "division_por_grupo": bool(has_groups),
             "muestras_por_vista": {k: int(v) for k, v in Counter(views.tolist()).items()},

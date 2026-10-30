@@ -90,6 +90,25 @@ class TestConfig(WebCase):
         self.assertIn("reinicia", aviso.lower())
         self.client.post("/api/config", json={"camera_index": 0})
 
+    def test_guardar_todo_sin_cambiar_umbrales_conserva_calibrated_y_no_avisa(self):
+        """La pagina manda los 18 campos en cada guardado."""
+        self.client.post("/api/config", json={"calibrated": True})
+        campos = self.client.get("/api/config").get_json()["config"]
+        del campos["calibrated"]
+        campos["voice_rate"] = 181
+        data = self.client.post("/api/config", json=campos).get_json()
+        self.assertTrue(data["config"]["calibrated"])
+        self.assertEqual(data["config"]["voice_rate"], 181)
+        self.assertEqual(data["aviso"], "")
+
+    def test_no_se_puede_escribir_la_referencia_desde_la_pagina(self):
+        ancla = {"forward_head_max": 2.5}
+        cfg = self.client.post("/api/config", json={"threshold_anchor": ancla}).get_json()["config"]
+        self.assertIsNone(cfg["threshold_anchor"])
+
+    def test_un_cuerpo_que_no_es_objeto_no_rompe(self):
+        self.assertEqual(self.client.post("/api/config", json=[1, 2]).status_code, 200)
+
 
 class TestPrivacidad(WebCase):
     def test_alterna_y_se_refleja_en_el_estado(self):

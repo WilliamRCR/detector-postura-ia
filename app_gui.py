@@ -4,6 +4,7 @@ Incluye evaluacion inicial de 30s con calibracion personal, avisos por tiempo
 sostenido, recordatorios de pausa, modo privacidad, historial persistente,
 configuracion editable y bandeja del sistema.
 """
+import math
 import time
 import tkinter as tk
 from tkinter import ttk
@@ -13,16 +14,10 @@ import numpy as np
 from PIL import Image, ImageTk
 
 import core
-from assessment import PostureAssessment
-from config import THRESHOLD_KEYS, AppConfig
+from assessment import PostureAssessment, verdict_lines
+from config import AppConfig
 from history import SessionHistory
-from posture_metrics import (
-    SessionStats,
-    detect_context,
-    evaluate_aspects,
-    scene_label,
-    summarize_aspects,
-)
+from posture_metrics import SessionStats, detect_context, evaluate_aspects, scene_label
 from voice_feedback import BreakReminder, DesktopNotifier, PostureVoiceCoach, VoiceFeedback
 
 BG_COLOR = "#1a1a2e"
@@ -50,7 +45,7 @@ SCREEN_MARGIN = 90
 class PostureApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Detector de Postura IA")
+        self.root.title("PosturIA")
         self.root.configure(bg=BG_COLOR)
         # Redimensionable a proposito: si la pantalla es justa, el usuario
         # siempre puede estirar la ventana para ver los botones.
@@ -171,7 +166,7 @@ class PostureApp:
         header.pack(fill=tk.X)
         tk.Label(
             header,
-            text="DETECTOR DE POSTURA  IA",
+            text="PosturIA",
             font=("Segoe UI", 18, "bold"),
             fg="white",
             bg=ACCENT_COLOR,
@@ -545,9 +540,12 @@ class PostureApp:
                 if not text:
                     continue
                 try:
-                    values[key] = float(text)
+                    number = float(text)
                 except ValueError:
+                    number = math.nan
+                if not math.isfinite(number):
                     return None, f"«{text}» no es un número válido."
+                values[key] = number
         return values, None
 
     def _save_settings(self):
@@ -556,7 +554,7 @@ class PostureApp:
             self.settings_msg.set(error)
             return
         # Un cambio manual de umbrales deja de ser una calibracion automatica.
-        if any(self.cfg[key] != values.get(key, self.cfg[key]) for key in THRESHOLD_KEYS):
+        if self.cfg.thresholds_changed(values):
             values["calibrated"] = False
         camara_cambio = int(values.get("camera_index", self.cfg.camera_index)) != self.cfg.camera_index
         self.cfg.update(values)
@@ -573,7 +571,11 @@ class PostureApp:
         self.cfg.reset()
         self._apply_config()
         self._refresh_settings_fields()
-        self.settings_msg.set("Valores por defecto restaurados.")
+        self.settings_msg.set(
+            "Valores por defecto restaurados; tus umbrales de entrenamiento se conservan."
+            if self.cfg.threshold_anchor
+            else "Valores por defecto restaurados."
+        )
         self.root.after(4000, lambda: self.settings_msg.set(""))
 
     def _refresh_settings_fields(self):
@@ -627,7 +629,7 @@ class PostureApp:
             pystray.MenuItem("Mostrar ventana", self._tray_show, default=True),
             pystray.MenuItem("Salir", self._tray_quit),
         )
-        self._tray = pystray.Icon("postura", image, "Detector de Postura IA", menu)
+        self._tray = pystray.Icon("postura", image, "PosturIA", menu)
         try:
             self._tray.run_detached()
         except Exception:
@@ -668,8 +670,8 @@ class PostureApp:
             self.start_btn.config(state=tk.DISABLED)
             return
         self.voice.say_now(
-            "Bienvenido al detector de postura. Ubícate frente a la cámara y "
-            "presiona Iniciar cuando estés listo para la evaluación de treinta segundos."
+            "Bienvenido al detector de postura. Ubícate frente a la cámara y presiona "
+            f"Iniciar cuando estés listo para la evaluación de {int(self.cfg.assessment_seconds)} segundos."
         )
         self.running = True
         self._update_frame()
@@ -779,11 +781,16 @@ class PostureApp:
                 self.assessment.record(is_correct, raw_feedback, context, aspects, metrics)
                 self.session.record(is_correct, raw_feedback)
                 dot_color, line_color = (241, 196, 15), (243, 156, 18)
+                if is_correct is None:
+                    feedback_text = "No te puedo medir: ubícate de frente o de perfil"
             else:
                 self.predictor.reset()
 
             if self.assessment.time_up:
-                result = self.assessment.finish(base_thresholds=self.cfg.thresholds())
+                result = self.assessment.finish(
+                    base_thresholds=self.cfg.thresholds(),
+                    anchor_thresholds=self.cfg.anchor_thresholds(),
+                )
                 nota = self._apply_calibration(result)
                 result["calibration_note"] = nota
                 self.last_verdict = result
@@ -793,13 +800,13 @@ class PostureApp:
         elif time.time() < self.verdict_hold_until and self.last_verdict is not None:
             # --- Fase 2: mostrar el veredicto + checklist de aspectos ---
             result = self.last_verdict
-            status_text = "Estado:  BUENA POSTURA  ✓" if result["good"] else "Estado:  A MEJORAR  ✗"
-            bg_color = GREEN if result["good"] else RED
-            lineas = [f"{result['percent_correct']:.0f}% correcta en la evaluación"]
-            lineas += summarize_aspects(result["aspect_percents"])
-            if result.get("calibration_note"):
-                lineas.append(result["calibration_note"])
-            feedback_text = "\n".join(lineas)
+            if not result["samples"]:
+                status_text, bg_color = "Estado:  SIN DATOS", ACCENT_COLOR
+            elif result["good"]:
+                status_text, bg_color = "Estado:  BUENA POSTURA  ✓", GREEN
+            else:
+                status_text, bg_color = "Estado:  A MEJORAR  ✗", RED
+            feedback_text = "\n".join(verdict_lines(result))
             dot_color, line_color = (46, 204, 113), (39, 174, 96)
 
         elif results.pose_landmarks:

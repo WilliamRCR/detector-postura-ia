@@ -93,6 +93,15 @@ class TestSessionHistory(TempFileCase):
         h.save_session(minutos=40, porcentaje=99.0, inicio=datetime(2026, 9, 1, 9, 0))
         self.assertEqual(h.totals(days=7, today=hoy)["sesiones"], 0)
 
+    def test_el_problema_comun_no_mira_fechas_futuras(self):
+        hoy = date(2026, 10, 27)
+        h = self.nueva()
+        h.save_session(minutos=30, porcentaje=80.0, problema_comun="Hoy", inicio=datetime(2026, 10, 27, 9, 0))
+        for _ in range(2):
+            h.save_session(minutos=30, porcentaje=80.0, problema_comun="Futuro",
+                           inicio=datetime(2026, 11, 2, 9, 0))
+        self.assertEqual(h.totals(days=7, today=hoy)["problema_comun"], "Hoy")
+
     def test_guarda_desde_session_stats(self):
         h = self.nueva()
         stats = SessionStats()
@@ -193,6 +202,58 @@ class TestAppConfig(TempFileCase):
         cfg = self.nueva()
         cfg.update({"alert_after_seconds": "no-es-un-numero"})
         self.assertEqual(cfg.alert_after_seconds, DEFAULTS["alert_after_seconds"])
+
+    def test_infinito_y_nan_caen_al_default(self):
+        cfg = self.nueva()
+        cfg.update({"camera_index": float("inf"), "alert_after_seconds": float("nan"),
+                    "break_minutes": float("nan"), "voice_cooldown": float("inf")})
+        for clave in ("camera_index", "alert_after_seconds", "break_minutes", "voice_cooldown"):
+            self.assertEqual(cfg[clave], DEFAULTS[clave], clave)
+
+    def test_un_campo_vacio_no_cambia_el_valor_guardado(self):
+        cfg = self.nueva()
+        cfg.update({"shoulder_tilt_max": 0.31})
+        cfg.update({"shoulder_tilt_max": None})
+        self.assertEqual(cfg.shoulder_tilt_max, 0.31)
+
+    def test_detecta_cambios_reales_de_umbral(self):
+        cfg = self.nueva()
+        self.assertFalse(cfg.thresholds_changed(cfg.as_dict()))
+        self.assertFalse(cfg.thresholds_changed({"voice_rate": 200, "shoulder_tilt_max": None}))
+        self.assertTrue(cfg.thresholds_changed({"shoulder_tilt_max": 0.31}))
+
+    def test_referencia_por_defecto_son_los_umbrales_generales(self):
+        self.assertEqual(self.nueva().anchor_thresholds(), PostureThresholds())
+
+    def test_train_deja_la_referencia_y_sobrevive_al_cargar(self):
+        path = self.tmp / "config.json"
+        cfg = AppConfig(path=path)
+        cfg.set_thresholds(PostureThresholds(forward_head_max=1.5), anchor=True)
+        otra = AppConfig.load(path)
+        self.assertEqual(otra.anchor_thresholds().forward_head_max, 1.5)
+
+    def test_calibrar_en_vivo_no_mueve_la_referencia(self):
+        cfg = self.nueva()
+        cfg.set_thresholds(PostureThresholds(forward_head_max=1.5), anchor=True)
+        cfg.set_thresholds(PostureThresholds(forward_head_max=1.2))
+        self.assertEqual(cfg.thresholds().forward_head_max, 1.2)
+        self.assertEqual(cfg.anchor_thresholds().forward_head_max, 1.5)
+
+    def test_restaurar_conserva_los_umbrales_de_entrenamiento(self):
+        cfg = self.nueva()
+        cfg.set_thresholds(PostureThresholds(forward_head_max=1.5), anchor=True)
+        cfg.update({"forward_head_max": 2.0, "voice_rate": 300})
+        cfg.reset()
+        self.assertEqual(cfg.forward_head_max, 1.5)
+        self.assertEqual(cfg.voice_rate, DEFAULTS["voice_rate"])
+        self.assertTrue(cfg.calibrated)
+
+    def test_referencia_con_basura_se_ignora(self):
+        cfg = self.nueva()
+        cfg.update({"threshold_anchor": "no es un dict"})
+        self.assertIsNone(cfg.threshold_anchor)
+        cfg.update({"threshold_anchor": {"forward_head_max": 9999, "otra": 1}})
+        self.assertEqual(cfg.threshold_anchor, {"forward_head_max": 3.0})
 
     def test_config_json_corrupto_no_rompe(self):
         path = self.tmp / "config.json"

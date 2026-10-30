@@ -32,15 +32,20 @@ class SustainedStateTimer:
     se repite cada `repeat_seconds` si no se corrige.
     """
 
-    def __init__(self, min_seconds=6.0, repeat_seconds=25.0, grace_seconds=1.0):
+    def __init__(self, min_seconds=6.0, repeat_seconds=25.0, grace_seconds=1.0, unknown_reset_seconds=15.0):
         self.min_seconds = min_seconds
         self.repeat_seconds = repeat_seconds
         # Un frame bueno aislado (la IA duda un instante) no deberia reiniciar
         # el contador: se tolera `grace_seconds` de postura buena.
         self.grace_seconds = grace_seconds
+        # Girarse un momento no reinicia el contador, pero pasado este tiempo
+        # sin poder medir el episodio se cierra: lo que paso mientras tanto no
+        # se sabe y no puede contar como mala postura sostenida.
+        self.unknown_reset_seconds = unknown_reset_seconds
         self._bad_since = None
         self._good_since = None
         self._last_alert_at = None
+        self._last_reading_at = None
         self._was_bad = False
 
     # ------------------------------------------------------------------
@@ -70,8 +75,13 @@ class SustainedStateTimer:
         """
         now = time.time() if now is None else now
 
+        last = self._last_reading_at
+        if last is not None and (now - last) > self.unknown_reset_seconds:
+            self.reset()
+
         if is_correct is None:
             return None
+        self._last_reading_at = now
 
         if not is_correct:
             self._good_since = None
@@ -106,4 +116,5 @@ class SustainedStateTimer:
         self._bad_since = None
         self._good_since = None
         self._last_alert_at = None
+        self._last_reading_at = None
         self._was_bad = False

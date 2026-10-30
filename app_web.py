@@ -12,16 +12,10 @@ import numpy as np
 from flask import Flask, Response, jsonify, render_template, request
 
 import core
-from assessment import PostureAssessment
-from config import THRESHOLD_KEYS, AppConfig
+from assessment import PostureAssessment, verdict_lines
+from config import ANCHOR_KEY, AppConfig
 from history import SessionHistory
-from posture_metrics import (
-    SessionStats,
-    detect_context,
-    evaluate_aspects,
-    scene_label,
-    summarize_aspects,
-)
+from posture_metrics import SessionStats, detect_context, evaluate_aspects, scene_label
 from voice_feedback import BreakReminder, DesktopNotifier, PostureVoiceCoach, VoiceFeedback
 
 app = Flask(__name__)
@@ -117,8 +111,8 @@ def capture_loop():
     verdict_hold_until = 0.0
 
     voice.say_now(
-        "Bienvenido al detector de postura. Ubícate frente a la cámara y "
-        "presiona Iniciar cuando estés listo para la evaluación de treinta segundos."
+        "Bienvenido al detector de postura. Ubícate frente a la cámara y presiona "
+        f"Iniciar cuando estés listo para la evaluación de {int(cfg.assessment_seconds)} segundos."
     )
 
     while True:
@@ -180,11 +174,15 @@ def capture_loop():
                 assessment.record(is_correct, raw_feedback, context, aspects, metrics)
                 session.record(is_correct, raw_feedback)
                 dot, line = (241, 196, 15), (243, 156, 18)
+                if is_correct is None:
+                    feedback = "No te puedo medir: ubícate de frente o de perfil"
             else:
                 predictor.reset()
 
             if assessment.time_up:
-                result = assessment.finish(base_thresholds=cfg.thresholds())
+                result = assessment.finish(
+                    base_thresholds=cfg.thresholds(), anchor_thresholds=cfg.anchor_thresholds()
+                )
                 thresholds = result.get("thresholds")
                 if thresholds is not None:
                     cfg.set_thresholds(thresholds)
@@ -196,14 +194,14 @@ def capture_loop():
         elif time.time() < verdict_hold_until and last_verdict is not None:
             # --- Fase 2: mostrar el veredicto + checklist de aspectos ---
             result = last_verdict
-            status = "BUENA POSTURA" if result["good"] else "A MEJORAR"
-            color = "green" if result["good"] else "red"
-            lineas = [f"{result['percent_correct']:.0f}% correcta en la evaluación"]
-            lineas += summarize_aspects(result["aspect_percents"])
+            if not result["samples"]:
+                status, color = "SIN DATOS", "blue"
+            elif result["good"]:
+                status, color = "BUENA POSTURA", "green"
+            else:
+                status, color = "A MEJORAR", "red"
             calibration_note = result.get("calibration_note", "")
-            if calibration_note:
-                lineas.append(calibration_note)
-            feedback = "\n".join(lineas)
+            feedback = "\n".join(verdict_lines(result))
             dot, line = (46, 204, 113), (39, 174, 96)
 
         elif results.pose_landmarks:
@@ -359,6 +357,15 @@ def api_start():
             return jsonify(ok=False, error=state["camera_error"] or "La cámara no está disponible")
         if state["testing_started"]:
             return jsonify(ok=True)
+    # Primero se prepara todo y recien despues se avisa al hilo de captura: al
+    # reves, un frame caia en coaching continuo antes de empezar la evaluacion.
+    predictor.reset()
+    coach.reset()
+    assessment.duration = cfg.assessment_seconds
+    assessment.start()
+    session.start()
+    breaks.start()
+    with state_lock:
         state["testing_started"] = True
         state["status"] = "Sin detectar"
         state["feedback"] = ""
@@ -366,12 +373,6 @@ def api_start():
         state["context"] = ""
         state["session_info"] = ""
         state["calibration_note"] = ""
-    predictor.reset()
-    coach.reset()
-    assessment.duration = cfg.assessment_seconds
-    assessment.start()
-    session.start()
-    breaks.start()
     voice.say_now(
         "Mantén tu postura habitual, sentado o de pie, durante los próximos "
         f"{int(cfg.assessment_seconds)} segundos. Voy a evaluarla."
@@ -381,7 +382,8 @@ def api_start():
 
 @app.route("/api/stop", methods=["POST"])
 def api_stop():
-    _save_session()
+    # Primero se detiene el hilo de captura y luego se guarda: al reves podia
+    # anotar un frame mas en la sesion ya guardada.
     with state_lock:
         state["testing_started"] = False
         state["status"] = "Sin detectar"
@@ -390,6 +392,9 @@ def api_stop():
         state["context"] = ""
         state["session_info"] = ""
         state["break_in"] = None
+    _save_session()
+    if predictor is not None:
+        predictor.reset()
     coach.reset()
     return jsonify(ok=True)
 
@@ -411,15 +416,18 @@ def api_config():
     if request.method == "GET":
         return jsonify(ok=True, config=cfg.as_dict())
 
-    payload = request.get_json(silent=True) or {}
-    # Cambiar un umbral a mano deja de ser calibracion automatica.
-    if any(key in payload for key in THRESHOLD_KEYS):
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    payload.pop(ANCHOR_KEY, None)  # esa referencia solo la escribe train.py
+    # La pagina manda todos los campos en cada guardado, asi que se compara con
+    # lo que hay: solo un cambio real de umbral deja de ser calibracion automatica.
+    if cfg.thresholds_changed(payload):
         payload.setdefault("calibrated", False)
+    camara_cambio = cfg.would_change("camera_index", payload.get("camera_index"))
     cfg.update(payload)
     _apply_config()
-    aviso = ""
-    if "camera_index" in payload:
-        aviso = "El cambio de cámara se aplica al reiniciar la app."
+    aviso = "El cambio de cámara se aplica al reiniciar la app." if camara_cambio else ""
     return jsonify(ok=True, config=cfg.as_dict(), aviso=aviso)
 
 

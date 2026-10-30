@@ -191,16 +191,20 @@ class DesktopNotifier:
     pierden las notificaciones de escritorio.
     """
 
-    APP_NAME = "Detector de Postura IA"
+    APP_NAME = "PosturIA"
+
+    # Errores seguidos antes de rendirse; uno suelto no debe apagar los avisos.
+    MAX_FAILURES = 3
 
     def __init__(self, enabled=True, cooldown=30.0):
         self.enabled = enabled
         self._cooldown = cooldown
         self._last_at = 0.0
+        self._failures = 0
         self._notify = None
 
-        if not enabled:
-            return
+        # Se comprueba siempre, aunque arranque apagado: asi se puede activar
+        # despues desde la interfaz.
         try:
             from plyer import notification  # noqa: PLC0415  (dependencia opcional)
 
@@ -215,6 +219,8 @@ class DesktopNotifier:
 
     def set_enabled(self, enabled):
         self.enabled = bool(enabled) and self._notify is not None
+        if self.enabled:
+            self._failures = 0
 
     def notify(self, title, message, force=False):
         if not self.enabled or self._notify is None:
@@ -230,10 +236,14 @@ class DesktopNotifier:
                 app_name=self.APP_NAME,
                 timeout=8,
             )
+            self._failures = 0
             return True
         except Exception as exc:
             print(f"No pude mostrar la notificacion ({exc}).")
-            self.enabled = False
+            self._failures += 1
+            if self._failures >= self.MAX_FAILURES:
+                print("Las notificaciones fallan seguido, las apago.")
+                self.enabled = False
             return False
 
 
